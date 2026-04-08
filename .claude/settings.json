@@ -1,6 +1,172 @@
 {
   "permissions": {
-    "allow": [],
-    "deny": []
+    "allow": [
+      "WebFetch",
+      "WebSearch",
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Agent",
+      "AskUserQuestion",
+      "TodoWrite",
+      "EnterPlanMode",
+      "ExitPlanMode"
+    ]
+  },
+  "features": {
+    "alwaysThinkingEnabled": true,
+    "contextManagement": true,
+    "hybridMode": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "trigger": "complex_feature_start",
+        "run": "Agent",
+        "subagent_type": "planner",
+        "prompt": "복잡한 구현 전 상세 계획 및 설계 검토"
+      },
+      {
+        "tools": ["Write", "Edit"],
+        "patterns": ["**/*.ts", "**/*.js", "**/*.py", "**/*.go", "**/*.rs"],
+        "trigger": "complex_feature",
+        "run": "Skill",
+        "skill": "deep-research",
+        "prompt": "기존 구현 패턴, 라이브러리, 베스트 프랙티스 조사"
+      },
+      {
+        "tools": ["Write", "Edit"],
+        "patterns": ["**/arch/**", "**/design/**", "**/*-service.*", "**/core/**"],
+        "trigger": "architectural_change",
+        "run": "Agent",
+        "subagent_type": "architect",
+        "prompt": "아키텍처 설계 검증, trade-off 분석, 확장성 검토"
+      },
+      {
+        "tools": ["Write"],
+        "patterns": ["**/auth/**", "**/security/**", "**/payment/**", "**/crypto/**"],
+        "run": "Agent",
+        "subagent_type": "security-reviewer",
+        "prompt": "보안 민감 코드 사전 검증, 취약점 분석"
+      },
+      {
+        "tools": ["Write", "Edit"],
+        "patterns": ["**/components/**", "**/*.tsx", "**/*.vue", "**/*.jsx", "**/ui/**"],
+        "trigger": "ui_feature",
+        "run": "Skill",
+        "skill": "design-system",
+        "prompt": "디자인 시스템 일관성, 컴포넌트 재사용성 검증"
+      },
+      {
+        "tools": ["Write"],
+        "patterns": ["**/design/**", "**/*-design.ts", "**/layouts/**"],
+        "trigger": "design_planning",
+        "run": "Skill",
+        "skill": "frontend-design",
+        "prompt": "UI/UX 설계 검증, 사용성 개선안 제시"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "tools": ["Write", "Edit"],
+        "patterns": ["**/*.ts", "**/*.js", "**/*.py", "**/*.go", "**/*.rs"],
+        "run": "Agent",
+        "subagent_type": "code-reviewer",
+        "prompt": "코드 품질, 패턴, 성능, 보안 검증"
+      },
+      {
+        "tools": ["Write", "Edit"],
+        "patterns": ["**/components/**", "**/*.tsx", "**/*.jsx"],
+        "run": "Skill",
+        "skill": "frontend-patterns",
+        "prompt": "프론트엔드 컴포넌트 패턴, 상태관리, 성능 최적화"
+      },
+      {
+        "tools": ["Write", "Edit"],
+        "patterns": ["**/*.swift"],
+        "run": "Skill",
+        "skill": "swiftui-patterns",
+        "prompt": "SwiftUI 디자인 패턴, iOS 가이드라인 준수"
+      },
+      {
+        "tools": ["Write", "Edit"],
+        "patterns": ["**/*.dart"],
+        "run": "Skill",
+        "skill": "dart-flutter-patterns",
+        "prompt": "Flutter UI 패턴, 상태관리, 성능 최적화"
+      },
+      {
+        "tools": ["Write", "Edit"],
+        "patterns": ["**/*.md", "README.md", "CLAUDE.md", "docs/**"],
+        "run": "Agent",
+        "subagent_type": "doc-updater",
+        "prompt": "문서 품질, 가독성, 최신성 검증"
+      },
+      {
+        "tools": ["Write", "Edit"],
+        "patterns": ["**/styles/**", "**/*styles*", "**/*theme*"],
+        "run": "Skill",
+        "skill": "brand-voice",
+        "prompt": "브랜드 스타일 일관성, 디자인 가이드 준수"
+      }
+    ],
+    "Stop": [
+      {
+        "run": "Skill",
+        "skill": "quality-gate",
+        "prompt": "최종 품질 게이트: 코드 완성도, 테스트 커버리지, 보안 검증"
+      },
+      {
+        "run": "Skill",
+        "skill": "click-path-audit",
+        "prompt": "UI/UX 클릭 경로, 사용자 흐름, 접근성 최종 검증"
+      },
+      {
+        "run": "Skill",
+        "skill": "verify",
+        "prompt": "전체 작업 완료도, 커밋 준비상태 최종 확인"
+      }
+    ]
+  },
+
+  "gsd": {
+    "enabled": true,
+    "lightweight": true,
+    "conditional": true,
+    "framework": "Lightweight Adaptive GSD",
+    "trigger_conditions": {
+      "team_size_minimum": 3,
+      "project_duration_days_minimum": 90,
+      "architectural_changes": true,
+      "collaborative_work": true
+    },
+    "context_file": ".planning/CONTEXT.md",
+    "decisions_file": ".planning/DECISIONS.md"
+  },
+
+  "context_management": {
+    "enabled": true,
+    "lightweight_mode": true,
+    "strategy": "Hybrid (30-100 lines)",
+    "files": {
+      "context": ".planning/CONTEXT.md",
+      "decisions": ".planning/DECISIONS.md",
+      "meeting_notes": ".planning/MEETING_NOTES.md"
+    },
+    "update_frequency": "Weekly or as-needed"
+  },
+
+  "hybrid_orchestration": {
+    "base": "A++++ (always)",
+    "conditional": "GSD (when needed)",
+    "automation": "Maximized",
+    "team_adaptations": {
+      "1_person": "A++++ only",
+      "2_3_people": "A++++ + simple CONTEXT.md (30 lines)",
+      "4_5_people": "A++++ + GSD Plan + CONTEXT.md (100 lines)"
+    }
   }
 }

@@ -1,0 +1,100 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/@prisma/client"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Player {
+  id          String   @id @default(uuid())
+  nickname    String   @unique
+  password    String   // 해싱된 비밀번호 저장
+  points      BigInt   @default(100000) // 초기 100,000점 (BigInt 전환)
+  isAdmin     Boolean  @default(false)  // 관리자 권한 여부
+  isRestricted Boolean @default(false)  // 계정 활동 제한 여부
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 승률 계산을 위한 필드
+  totalGames  Int      @default(0)
+  totalWins   Int      @default(0)
+
+  // 관계 설정
+  gameHistories PlayerInGame[]
+  pointLogs     PointLog[]
+  adminLogs     AdminLog[]
+}
+
+model AdminLog {
+  id          String   @id @default(uuid())
+  adminId     String
+  targetPlayerId String?
+  action      String   // "CREDIT_ADJUST", "ACCOUNT_LOCK", "SYSTEM_RESTART"
+  amount      Int?     // 포인트 조정 시 금액
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  admin       Player   @relation(fields: [adminId], references: [id])
+}
+
+model GameRoom {
+  id          String   @id // 룸 ID (e.g. "ROOM_1")
+  state       String   // WAITING, BIDDING, EXCHANGE, SELECT_FRIEND, PLAYING, RESULT
+  highBidAmount Int?
+  highBidSuit  String?
+  trumpSuit    String?
+  friendCard   String? // JSON string
+  dealerIndex  Int      @default(0)
+  updatedAt    DateTime @updatedAt
+
+  tricks       GameTrick[]
+}
+
+model GameTrick {
+  id          String   @id @default(uuid())
+  roomId      String
+  trickNumber Int
+  cards       String   // Played cards JSON string
+  winnerId    String?
+
+  room        GameRoom @relation(fields: [roomId], references: [id])
+}
+
+model GameHistory {
+  id          String   @id @default(uuid())
+  playedAt    DateTime @default(now())
+  
+  // 게임 요약 (비딩 결과, 기루다 등)
+  trumpSuit   String
+  bidAmount   Int
+  winnerTeam  String // "BID_WINNER_SIDE" or "OPPOSITION_SIDE"
+  
+  players     PlayerInGame[]
+}
+
+model PlayerInGame {
+  id          String   @id @default(uuid())
+  playerId    String
+  gameId      String
+  role        String   // "BID_WINNER", "FRIEND", "OPPOSITION"
+  resultPoints Int     // 해당 판에서 획득/상실한 포인트
+
+  player      Player      @relation(fields: [playerId], references: [id])
+  game        GameHistory @relation(fields: [gameId], references: [id])
+
+  @@unique([playerId, gameId])
+}
+
+model PointLog {
+  id          String   @id @default(uuid())
+  playerId    String
+  amount      Int
+  type        String   // "GAME_RESULT", "ADMIN_CREDIT", "INITIAL"
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  player      Player   @relation(fields: [playerId], references: [id])
+}
