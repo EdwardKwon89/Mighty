@@ -1,0 +1,9 @@
+The "--name" option is deprecated (https://vercel.link/name-flag)
+Retrieving project…
+Deploying edwardkwon89s-projects/mighty-prime
+Uploading [--------------------] (0.0B/332.8MB)
+Uploading [=====---------------] (83.2MB/332.8MB)
+Uploading [==========----------] (166.4MB/332.8MB)
+Uploading [===============-----] (249.6MB/332.8MB)
+Uploading [====================] (332.8MB/332.8MB)
+Error: File size limit exceeded (100 MB)
