@@ -1,4 +1,4 @@
-import { Card, Suit, Rank, getCardId } from './index.js';
+import { Card, Suit, Rank, getCardId, isSameSuit } from './index.js';
 
 export interface PlayedCard {
   playerId: string;
@@ -106,17 +106,32 @@ export function canPlayCard(
     return { canPlay: false, reason: "Card not in hand" };
   }
 
-  if (isMighty) return { canPlay: true };
+  if (isMighty) {
+    // 1트릭 마이티 리드는 금지가 일반적이지만 여기서는 따르는 경우엔 항상 허용
+    return { canPlay: true };
+  }
 
   if (isJoker) {
     if (context.isFirstTrick || context.isLastTrick) {
-      if (!leadSuit) return { canPlay: false, reason: "Joker cannot be lead in first/last trick" };
+      if (!leadSuit) return { canPlay: false, reason: "Joker cannot be led in first/last trick" };
     }
     return { canPlay: true };
   }
 
-  if (leadSuit && card.suit !== leadSuit) {
-    const hasLeadSuit = hand.some(c => c.suit === leadSuit);
+  // 조커콜 처리: 조커가 있고 조커콜이 불렸으면 조커부터 내야 함 (마이티 제외)
+  if (context.isJokerCalled) {
+    const hasJoker = hand.some(c => c.suit === Suit.JOKER);
+    if (hasJoker && card.suit !== Suit.JOKER) {
+      // 마이티는 조커콜보다 우선권이 있으므로 낼 수 있음
+      if (!isMighty) {
+        return { canPlay: false, reason: "Must play Joker on Joker Call" };
+      }
+    }
+  }
+
+  if (leadSuit && !isSameSuit(card.suit, leadSuit)) {
+    // Suit mismatch check - ensure we are actually comparing the same representation
+    const hasLeadSuit = hand.some(c => isSameSuit(c.suit, leadSuit));
     if (hasLeadSuit) {
       return { canPlay: false, reason: `Must follow lead suit: ${leadSuit}` };
     }
@@ -161,10 +176,10 @@ export function evaluateTrick(
         score = 20000;
       }
     }
-    else if (pc.card.suit === context.trumpSuit) {
+    else if (isSameSuit(pc.card.suit, context.trumpSuit)) {
       score += 10000;
     }
-    else if (pc.card.suit === leadSuit) {
+    else if (isSameSuit(pc.card.suit, leadSuit)) {
       score += 1000;
     }
     else {
@@ -241,19 +256,20 @@ export function generateBotPlayCard(params: {
   // 1. 낼 수 있는 모든 카드 필터링
   const playableCards = hand.filter(c => canPlayCard(hand, leadSuit, context, c).canPlay);
 
-  if (playableCards.length === 0) return hand[0]; // 안전 장치
+  if (playableCards.length === 0) {
+    console.warn(`[BOT_RULES] No playable cards for bot! Hand: ${hand.map(c => c.id).join(',')}`);
+    return hand[0];
+  }
 
   // 2. 리드 무늬가 있는 경우: 가장 낮은 카드 내기 (단순 전략)
   if (leadSuit) {
-    // 같은 무늬 중 가장 낮은 카드
     const sameSuitCards = playableCards.filter(c => c.suit === leadSuit);
     if (sameSuitCards.length > 0) {
       return sameSuitCards.reduce((prev, curr) => (curr.rank < prev.rank ? curr : prev));
     }
   }
 
-  // 3. 리드 무늬가 없거나(선 플레이어), 리드 무늬를 따를 수 없는 경우
-  // 조커나 마이티는 아끼고 일반 카드 중 가장 낮은 것 내기
+  // 3. 리드 무늬가 없거나, 따를 수 없는 경우
   const normalCards = playableCards.filter(c => 
     c.suit !== Suit.JOKER && 
     getCardId(c.suit, c.rank) !== context.mightyCardId

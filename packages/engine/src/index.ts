@@ -38,6 +38,12 @@ export function getCardId(suit: Suit, rank: Rank): string {
   return `${prefix}${rank}`;
 }
 
+export function isSameSuit(suitA: Suit | string | null, suitB: Suit | string | null): boolean {
+  if (!suitA || !suitB) return suitA === suitB;
+  if (suitA === suitB) return true;
+  return suitA[0] === suitB[0];
+}
+
 /**
  * 전용 마이티 규칙 상수 정의
  */

@@ -25,9 +25,18 @@ export default function AdminPage() {
   const [adjustAmount, setAdjustAmount] = useState<number>(0);
   const [adjustReason, setAdjustReason] = useState("");
 
+  // 로그 조회를 위한 상태 추가
+  const [logViewPlayer, setLogViewPlayer] = useState<string | null>(null);
+  const [playerLogs, setPlayerLogs] = useState<any[]>([]);
+  const [logPageInfo, setLogPageInfo] = useState({ currentPage: 1, totalPages: 1, totalCount: 0 });
+
+  // 삭제 확인을 위한 상태 추가
+  const [deleteConfirmPlayer, setDeleteConfirmPlayer] = useState<string | null>(null);
+
   useEffect(() => {
     const token = localStorage.getItem("mighty_token");
-    const s = io("http://localhost:4000", {
+    const serverUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
+    const s = io(serverUrl, {
       auth: { token }
     });
 
@@ -45,6 +54,15 @@ export default function AdminPage() {
     s.on("admin:players-list", (list: PlayerStats[]) => {
       setPlayers(list);
       setLoading(false);
+    });
+
+    s.on("admin:player-logs", (data: any) => {
+      setPlayerLogs(data.logs);
+      setLogPageInfo({
+        currentPage: data.currentPage,
+        totalPages: data.totalPages,
+        totalCount: data.totalCount
+      });
     });
 
     setSocket(s);
@@ -73,6 +91,22 @@ export default function AdminPage() {
       isRestricted: !player.isRestricted,
       reason: "관리자 수동 제어"
     });
+  };
+
+  const handleDeletePlayer = (nickname: string) => {
+    setDeleteConfirmPlayer(nickname);
+  };
+
+  const confirmDelete = () => {
+    if (!socket || !deleteConfirmPlayer) return;
+    socket.emit("admin:delete-player", { nickname: deleteConfirmPlayer });
+    setDeleteConfirmPlayer(null);
+  };
+
+  const fetchLogs = (nickname: string, page: number = 1) => {
+    if (!socket) return;
+    setLogViewPlayer(nickname);
+    socket.emit("admin:get-logs", { nickname, page, limit: 15 });
   };
 
   if (loading) {
@@ -172,12 +206,24 @@ export default function AdminPage() {
                           {player.isRestricted ? 'Restricted' : 'Active'}
                         </button>
                       </td>
-                      <td className="px-8 py-6 text-right">
+                      <td className="px-8 py-6 text-right space-x-2">
+                        <button 
+                          onClick={() => fetchLogs(player.nickname)}
+                          className="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-xl font-bold transition-all text-sm"
+                        >
+                          이력 보기
+                        </button>
                         <button 
                           onClick={() => setSelectedPlayer(player)}
                           className="px-4 py-2 bg-white/5 hover:bg-blue-600 rounded-xl font-bold transition-all text-sm"
                         >
                           포인트 조정
+                        </button>
+                        <button 
+                          onClick={() => handleDeletePlayer(player.nickname)}
+                          className="px-4 py-2 bg-white/5 hover:bg-red-600 rounded-xl font-bold transition-all text-sm opacity-50 hover:opacity-100"
+                        >
+                          삭제
                         </button>
                       </td>
                     </tr>
@@ -255,6 +301,151 @@ export default function AdminPage() {
                     className="flex-1 px-6 py-4 bg-blue-600 hover:bg-blue-500 rounded-2xl font-bold transition-all shadow-[0_0_20px_rgba(37,99,235,0.4)]"
                   >
                     반영하기
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Activity Logs Modal */}
+      <AnimatePresence>
+        {logViewPlayer && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setLogViewPlayer(null)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-xl"
+            />
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              className="relative w-full max-w-2xl p-8 bg-[#0a0a0a] border border-white/10 rounded-[40px] shadow-2xl flex flex-col max-h-[80vh]"
+            >
+              <div className="flex justify-between items-start mb-6">
+                <div>
+                  <h2 className="text-3xl font-black mb-1 lowercase tracking-tighter">Activity <span className="text-red-500">Logs</span></h2>
+                  <p className="text-gray-500 font-bold">{logViewPlayer}님의 포인트 변동 이력입니다.</p>
+                </div>
+                <button 
+                  onClick={() => setLogViewPlayer(null)}
+                  className="p-3 hover:bg-white/10 rounded-full transition-colors"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto pr-2 space-y-4 custom-scrollbar">
+                {playerLogs.length === 0 ? (
+                  <div className="py-20 text-center text-gray-500 font-bold">기록된 활동이 없습니다.</div>
+                ) : (
+                  playerLogs.map((log) => (
+                    <div key={log.id} className="bg-white/5 border border-white/5 rounded-3xl p-5 flex items-center justify-between group hover:border-white/10 transition-all">
+                      <div className="flex items-center gap-4">
+                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center border font-black ${
+                          log.amount > 0 ? 'bg-green-500/10 border-green-500/20 text-green-500' : 'bg-red-500/10 border-red-500/20 text-red-500'
+                        }`}>
+                          {log.amount > 0 ? '+' : ''}{log.amount.toLocaleString()}
+                        </div>
+                        <div>
+                          <div className="font-bold text-white flex items-center gap-2">
+                            <span className="text-xs px-2 py-0.5 bg-white/10 rounded-md text-gray-400">{log.type}</span>
+                            {log.reason || "상세 사유 없음"}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">{new Date(log.createdAt).toLocaleString()}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Pagination Controls */}
+              <div className="mt-8 pt-6 border-t border-white/5 flex items-center justify-between">
+                <div className="text-sm text-gray-500 font-bold">
+                  Total <span className="text-white">{logPageInfo.totalCount}</span> logs
+                </div>
+                <div className="flex items-center gap-4">
+                  <button 
+                    disabled={logPageInfo.currentPage === 1}
+                    onClick={() => fetchLogs(logViewPlayer, logPageInfo.currentPage - 1)}
+                    className="p-2 bg-white/5 hover:bg-white/10 rounded-xl disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                  <span className="font-mono font-bold text-lg">
+                    {logPageInfo.currentPage} <span className="text-gray-600">/</span> {logPageInfo.totalPages}
+                  </span>
+                  <button 
+                    disabled={logPageInfo.currentPage === logPageInfo.totalPages}
+                    onClick={() => fetchLogs(logViewPlayer, logPageInfo.currentPage + 1)}
+                    className="p-2 bg-white/5 hover:bg-white/10 rounded-xl disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {deleteConfirmPlayer && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setDeleteConfirmPlayer(null)}
+              className="absolute inset-0 bg-black/90 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-[320px] p-8 bg-[#0a0a0a]/80 border border-white/10 rounded-[40px] shadow-2xl backdrop-blur-3xl overflow-hidden"
+            >
+              {/* Decorative Red Glow */}
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1 bg-red-600 blur-lg opacity-50" />
+              
+              <div className="flex flex-col items-center text-center">
+                <div className="w-14 h-14 bg-red-500/20 border border-red-500/20 rounded-full flex items-center justify-center mb-6 animate-pulse">
+                  <svg className="w-7 h-7 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                
+                <h2 className="text-xl font-black mb-3 lowercase tracking-tight">Warning <span className="text-red-500">Notice</span></h2>
+                <p className="text-sm text-gray-400 font-bold leading-relaxed mb-8">
+                  <span className="text-white">@{deleteConfirmPlayer}</span> 플레이어를 영구 삭제하시겠습니까? 
+                  모든 데이터가 <span className="text-red-400">즉시 소멸</span>됩니다.
+                </p>
+
+                <div className="flex flex-col w-full gap-2.5">
+                  <button 
+                    onClick={confirmDelete}
+                    className="w-full py-3.5 bg-red-600 hover:bg-red-500 text-white rounded-2xl font-black text-sm transition-all shadow-[0_0_20px_rgba(220,38,38,0.2)] group overflow-hidden relative"
+                  >
+                    <span className="relative z-10">플레이어 영구 삭제</span>
+                    <div className="absolute inset-0 bg-gradient-to-r from-red-400/0 via-white/20 to-red-400/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-500" />
+                  </button>
+                  <button 
+                    onClick={() => setDeleteConfirmPlayer(null)}
+                    className="w-full py-3.5 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white rounded-2xl font-bold text-sm transition-all border border-white/5"
+                  >
+                    취소
                   </button>
                 </div>
               </div>

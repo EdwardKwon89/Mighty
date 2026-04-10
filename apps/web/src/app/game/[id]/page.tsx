@@ -24,6 +24,27 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [selectedFriendType, setSelectedFriendType] = useState<string>("CARD");
   const [selectedFriendCard, setSelectedFriendCard] = useState<{suit: Suit, rank: number}>({suit: Suit.SPADE, rank: 14});
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [gameError, setGameError] = useState<string | null>(null);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [viewport, setViewport] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setViewport({ width: window.innerWidth, height: window.innerHeight });
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const radius = useMemo(() => {
+    if (viewport.width === 0) return 240;
+    // Scale radius based on viewport, min 160, max 240
+    // Adjust logic to be more aggressive on small screens
+    const base = Math.min(viewport.width * 0.28, viewport.height * 0.22);
+    return Math.max(160, Math.min(base, 240));
+  }, [viewport]);
 
   const {
     gameState,
@@ -38,8 +59,26 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
     sendAddBot,
     leaveRoom,
     sendStartGame,
-    socket
+    restartGame,
+    clearError,
+    socket,
+    lastTrickResult
   } = useGame(resolvedParams.id, nickname || "");
+
+  const [isAnimating, setIsAnimating] = useState(false);
+
+  useEffect(() => {
+    if (lastTrickResult) {
+      setIsAnimating(true);
+      const timer = setTimeout(() => setIsAnimating(false), 2000);
+      return () => {
+        clearTimeout(timer);
+        setIsAnimating(false);
+      };
+    } else {
+      setIsAnimating(false);
+    }
+  }, [lastTrickResult]);
 
   const isMyTurn = useMemo(() => {
     if (!gameState || !socket?.id) return false;
@@ -115,13 +154,29 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
       setSelectedDiscards([]);
       setSelectedTrump(gameState.highBidSuit || "NO_TRUMP");
     }
+    
+    // 게임 리스타트 혹은 새 게임 시작 시 로컬 선택 상태 초기화
+    if (gameState?.state === GameState.READY || gameState?.state === GameState.BIDDING) {
+      setSelectedCardId(null);
+      setViewingCardId(null);
+      setSelectedDiscards([]);
+    }
   }, [gameState?.state, gameState?.highBidSuit]);
 
   // 권한 오류 또는 세션 만료 시 리다이렉트 처리
   useEffect(() => {
     if (error) {
-      alert(`접근 오류: ${error}`);
-      window.location.href = "/";
+      if (error === "INVALID_TOKEN" || error.includes("존재하지 않는 방")) {
+        setGameError(`접근 오류: ${error}`);
+        setShowErrorModal(true);
+        // 리다이렉트는 모달 닫을 때 하도록 변경하거나, 심각한 오류만 타이머로 처리
+        setTimeout(() => {
+          window.location.href = "/";
+        }, 3000);
+      } else {
+        setGameError(`게임 알림: ${error}`);
+        setShowErrorModal(true);
+      }
     }
   }, [error]);
   
@@ -175,8 +230,8 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
 
   const handleCardPlay = (card: any) => {
     console.log(`[DEBUG] Attempting to play card: ${card.suit} ${card.rank} (ID: ${card.id})`);
-    if (!gameState || gameState.state !== GameState.PLAYING || !isMyTurn) {
-      console.warn("[DEBUG] Play rejected: Not playing state or not my turn.");
+    if (!gameState || gameState.state !== GameState.PLAYING || !isMyTurn || isAnimating) {
+      console.warn("[DEBUG] Play rejected: Phase check failed.", { state: gameState?.state, isMyTurn, isAnimating });
       return;
     }
     const isFirstCardOfTrick = gameState.currentTrick.length === 0;
@@ -240,60 +295,70 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
   const currentThemeClass = getSuitTheme(gameState.trumpSuit || "NO_TRUMP").split(' ')[0];
 
   return (
-    <div className={`relative min-h-screen bg-[var(--color-surface)] overflow-hidden font-sans flex text-white transition-colors duration-1000 ${currentThemeClass}`}>
+    <div className={`relative min-h-screen bg-[var(--color-surface)] overflow-x-hidden overflow-y-auto lg:overflow-hidden font-sans flex flex-col lg:flex-row text-white transition-colors duration-1000 ${currentThemeClass}`}>
       {/* Dynamic Background Glow sync with Trump */}
       <div className="absolute inset-x-0 bottom-0 top-1/4 bg-[var(--theme-glow)] rounded-t-[50%] blur-[120px] opacity-20 pointer-events-none transition-all duration-1000" />
       
       {/* MAIN GAME AREA */}
       <div className="flex-1 relative flex flex-col">
         {/* Header (Top Info) */}
-        <header className="flex justify-between items-center px-12 py-8 relative z-20">
-          <div className="flex items-center gap-6">
-            <div className={`w-3 h-3 rounded-full ${socket?.connected ? "bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]" : "bg-red-500 animate-pulse"} transition-all`} />
-            <div>
-              <h1 className="text-3xl font-black italic tracking-tighter text-white">MIGHTY<span className="text-primary not-italic tracking-normal ml-3 text-sm opacity-50 font-medium">BETA 0.1</span></h1>
-              <p className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.3em] mt-1">Room <span className="text-white">#{resolvedParams.id}</span></p>
-            </div>
-          </div>
-          <div className="flex items-center gap-6">
-            <button 
-              disabled={gameState.state !== 'WAITING' && gameState.state !== 'READY' && gameState.state !== 'RESULT'}
-              onClick={async () => {
-                await leaveRoom();
-                localStorage.setItem("mighty_last_location", JSON.stringify({ type: 'LOBBY' }));
-                window.location.href = "/lobby";
-              }}
-              className={`glass px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest border-white/5 transition-all active:scale-95 flex items-center gap-2 group ${
-                (gameState.state === 'WAITING' || gameState.state === 'READY' || gameState.state === 'RESULT') 
-                  ? 'hover:bg-red-500/20 hover:text-red-500 hover:border-red-500/20' 
-                  : 'opacity-30 cursor-not-allowed grayscale'
-              }`}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="opacity-60 group-hover:opacity-100 transition-opacity"><path d="m15 18-6-6 6-6"/></svg>
-              Leave
-            </button>
-            <div className="glass px-6 py-2.5 rounded-2xl text-[11px] font-black tracking-widest uppercase border-white/5">
-              Room <span className="text-primary ml-1">#{decodeURIComponent(resolvedParams.id)}</span>
+        <header className="flex justify-between items-start px-6 sm:px-12 py-6 sm:py-8 relative z-20">
+          <div className="flex flex-col gap-4 sm:gap-6">
+            <div className="flex items-center gap-6">
+              <div className={`w-3 h-3 rounded-full ${socket?.connected ? "bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]" : "bg-red-500 animate-pulse"} transition-all`} />
+              <div>
+                <h1 className="text-3xl font-black italic tracking-tighter text-white">MIGHTY<span className="text-primary not-italic tracking-normal ml-3 text-sm opacity-50 font-medium">BETA 0.1</span></h1>
+                <p className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.3em] mt-1">Room <span className="text-white">#{resolvedParams.id}</span></p>
+              </div>
             </div>
             
-            <div className="flex items-center gap-4 ml-2">
-               <div className={`w-2.5 h-2.5 rounded-full blur-[1px] animate-pulse ${currentTurnPlayer ? 'bg-primary shadow-[0_0_10px_rgba(var(--color-primary-rgb),0.8)]' : 'bg-zinc-800'}`} />
-               <div className="flex flex-col">
-                 <span className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-500 leading-none mb-1">Current Action</span>
-                  <span className="text-[11px] font-black uppercase text-white tracking-widest">
+            <div className="flex gap-3">
+              <div className="glass px-5 py-2 rounded-xl border-white/5 flex items-center gap-3">
+                <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${
+                  gameState.state === 'WAITING' ? 'bg-amber-400' :
+                  gameState.state === 'READY' ? 'bg-green-400' : 'bg-blue-400'
+                }`} />
+                <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/50">
+                   <span className="text-white">{
+                    gameState.state === 'WAITING' ? 'Waiting' :
+                    gameState.state === 'READY' ? 'Ready' : gameState.state
+                  }</span>
+                </span>
+              </div>
+              {gameState.trumpSuit && gameState.trumpSuit !== "NONE" && (
+                <div className={`glass px-5 py-2 rounded-xl text-[10px] font-black border-white/10 ${getSuitTheme(gameState.trumpSuit)} shadow-[0_0_15px_rgba(var(--color-primary-rgb),0.1)] flex items-center gap-2`}>
+                  <span className="opacity-50 uppercase tracking-widest text-[8px]">Trump</span>
+                  <span className="text-sm">{getSuitSymbol(gameState.trumpSuit)}</span>
+                </div>
+              )}
+              {gameState.state !== 'WAITING' && (
+                <div className="glass px-5 py-2 rounded-xl text-[10px] font-black tracking-widest border-white/5 bg-white/5 flex items-center gap-2">
+                  <span className="opacity-50 uppercase tracking-widest text-[8px]">Goal</span>
+                  <span className="text-primary text-sm">{gameState.highBidAmount}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-6 mt-1">
+            <div className="flex items-center gap-4 ml-2 mr-4 h-10 px-6 glass rounded-2xl border-white/5">
+               <div className={`w-2 h-2 rounded-full blur-[1px] animate-pulse ${currentTurnPlayer ? 'bg-primary shadow-[0_0_10px_rgba(var(--color-primary-rgb),0.8)]' : 'bg-zinc-800'}`} />
+               <div className="flex flex-col justify-center">
+                  <span className="text-[11px] font-black uppercase text-white tracking-widest leading-none">
                    {gameState.state === GameState.BIDDING 
-                     ? (isMyBid ? "Your Turn to Bid" : `Waiting for ${gameState.players[gameState.currentBidderIndex]?.nickname || 'next player'}`)
+                     ? (isMyBid ? "Your Turn to Bid" : `Waiting for ${gameState.players[gameState.currentBidderIndex]?.nickname || 'next'}`)
                      : gameState.state === GameState.EXCHANGING 
-                       ? (isDeclarer ? "Discard 3 Cards" : `Waiting for ${gameState.players[gameState.highBidderIndex]?.nickname}`)
+                       ? (isDeclarer ? "Discard 3 Cards" : `Discarding...`)
                        : gameState.state === GameState.SELECTING_FRIEND
-                         ? (isDeclarer ? "Select Your Friend" : `Waiting for ${gameState.players[gameState.highBidderIndex]?.nickname}`)
+                         ? (isDeclarer ? "Select Friend" : `Selecting Friend...`)
                          : currentTurnPlayer 
-                           ? (currentTurnPlayer.id === socket?.id ? "Your Turn to Play" : `${currentTurnPlayer.nickname}'s Turn`)
-                           : "Waiting..."
+                           ? (currentTurnPlayer.id === socket?.id ? "Your Turn" : `${currentTurnPlayer.nickname}'s Turn`)
+                           : "Syncing..."
                    }
                   </span>
                </div>
             </div>
+
             <div className="flex items-center gap-3">
               {gameState.state === GameState.WAITING && gameState.players.length < 5 && (
                 <button 
@@ -306,64 +371,51 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
               )}
               {gameState.state === 'READY' && isHost && (
                 <button 
-                  onClick={() => {
-                    sendStartGame();
-                  }}
+                  onClick={() => sendStartGame()}
                   className="glass px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest border-green-500/50 bg-green-500/10 text-green-400 hover:bg-green-500/20 hover:scale-105 transition-all active:scale-95 flex items-center gap-2 shadow-[0_0_20px_rgba(34,197,94,0.2)]"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                   Start Game
                 </button>
               )}
+              <button 
+                disabled={gameState.state !== 'WAITING' && gameState.state !== 'READY' && gameState.state !== 'RESULT'}
+                onClick={async () => {
+                  await leaveRoom();
+                  localStorage.setItem("mighty_last_location", JSON.stringify({ type: 'LOBBY' }));
+                  window.location.href = "/lobby";
+                }}
+                className={`glass px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest border-white/5 transition-all active:scale-95 flex items-center gap-2 group ${
+                  (gameState.state === 'WAITING' || gameState.state === 'READY' || gameState.state === 'RESULT') 
+                    ? 'hover:bg-red-500/20 hover:text-red-500 hover:border-red-500/20' 
+                    : 'opacity-30 cursor-not-allowed grayscale'
+                }`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="opacity-60 group-hover:opacity-100 transition-opacity"><path d="m15 18-6-6 6-6"/></svg>
+                Leave
+              </button>
+
+              {/* Chat Toggle (Small screens only) */}
+              <button 
+                onClick={() => setIsChatOpen(!isChatOpen)}
+                className={`lg:hidden glass px-4 py-2.5 rounded-xl border-white/5 transition-all active:scale-95 flex items-center justify-center p-2.5 ${isChatOpen ? 'bg-primary text-white border-primary/50' : 'bg-white/5 text-zinc-400 hover:text-white'}`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>
+                </svg>
+              </button>
             </div>
           </div>
         </header>
 
-        <div className="flex gap-4">
-          {/* Current Action / Status - Strictly Guarded by Phase & ID Match */}
-          {((isPlayingState || isBiddingState) && (gameState?.roomID === resolvedParams.id || gameState?.id === resolvedParams.id) && gameState?.state !== GameState.WAITING) && (
-            <div className="absolute top-12 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 z-[9999] pointer-events-none">
-              <div className="flex items-center gap-3 px-6 py-2 bg-white/5 backdrop-blur-xl border border-white/10 rounded-full">
-                <div className={`w-2 h-2 rounded-full animate-pulse ${isMyTurn ? "bg-green-400 shadow-[0_0_10px_#4ade80]" : "bg-purple-500 shadow-[0_0_10px_#a855f7]"}`} />
-                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/40">Current Action</span>
-                <span className="text-sm font-black uppercase tracking-widest text-white">
-                  {isMyTurn ? "Your Turn to Play" : (isBiddingState ? "Bidding in Progress" : `${gameState.players[gameState.turnIndex]?.nickname}'s Turn`)}
-                </span>
-              </div>
-              {gameState.state === GameState.PLAYING && (
-                <div className="px-4 py-1.5 bg-blue-500/10 border border-blue-500/20 rounded-full">
-                  <span className="text-[10px] font-bold text-blue-300 uppercase tracking-tighter">Trick #{gameState.trickCount}</span>
-                </div>
-              )}
-            </div>
-          )}
-          <div className="glass px-6 py-2.5 rounded-xl border-white/5 flex items-center gap-3">
-            <div className={`w-2 h-2 rounded-full animate-pulse ${
-              gameState.state === 'WAITING' ? 'bg-amber-400' :
-              gameState.state === 'READY' ? 'bg-green-400' : 'bg-blue-400'
-            }`} />
-            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/50">
-              Phase: <span className="text-white">{
-                gameState.state === 'WAITING' ? 'Waiting for Players' :
-                gameState.state === 'READY' ? 'Ready to Start' : gameState.state
-              }</span>
-            </span>
-          </div>
-          {gameState.trumpSuit && (
-            <div className={`glass px-6 py-2.5 rounded-2xl text-xs font-black border-white/10 ${getSuitTheme(gameState.trumpSuit)}`}>
-              Trump: {getSuitSymbol(gameState.trumpSuit)}
-            </div>
-          )}
-          <div className="glass px-6 py-2.5 rounded-2xl text-xs font-black tracking-widest border-white/5 bg-white/5">
-            Contract: <span className="text-primary ml-1">{gameState.highBidAmount}</span> <span className="opacity-60">{getSuitSymbol(gameState.highBidSuit || "")}</span>
-          </div>
-        </div>
 
         {/* Players Circle */}
-        <div className="flex-1 relative flex items-center justify-center mt-[-40px]">
-          <div className="relative w-full max-w-5xl h-[550px]">
+        <div className="flex-1 relative flex items-center justify-center mt-2 sm:mt-6 overflow-visible">
+          <div className="relative w-full max-w-5xl h-[400px] sm:h-[500px] md:h-[550px]">
             {/* Table Surface Visual */}
-            <div className="absolute inset-0 m-auto w-[600px] h-[350px] border border-white/5 bg-white/[0.02] rounded-[50%] blur-sm pointer-events-none" />
+            <div className={`absolute inset-0 m-auto border border-white/5 bg-white/[0.02] rounded-[50%] blur-sm pointer-events-none transition-all duration-700`}
+                 style={{ width: `${radius * 2.5}px`, height: `${radius * 1.5}px` }} 
+            />
             
             {gameState.players.map((p: any, idx: number) => {
               const myIdx = gameState.players.findIndex((pl: any) => pl.nickname === nickname);
@@ -386,14 +438,43 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
                   }}
                 >
                   <div className="relative group">
-                    <div className="w-24 h-24 rounded-full border-2 border-white/10 bg-black/40 backdrop-blur-md flex flex-col items-center justify-center transition-all group-hover:scale-110 group-hover:border-primary/50">
-                      <span className="text-[10px] font-black uppercase tracking-tighter text-white/80">{p.nickname}</span>
-                      <div className="text-[9px] font-bold text-zinc-500 mt-1">{p.cardCount} Cards</div>
-                      
-                      {isDeclarerPlayer && (
-                        <div className="absolute -top-2 -right-2 px-3 py-1 bg-red-600 rounded-full text-[9px] font-black text-white shadow-lg border border-white/20 z-10 animate-bounce">DEC</div>
-                      )}
-                    </div>
+                    {(() => {
+                      const isTurn = gameState.turnIndex === idx;
+                      return (
+                        <div className={`rounded-full border-2 bg-black/40 backdrop-blur-md flex flex-col items-center justify-center transition-all duration-300 group-hover:scale-110 ${
+                          viewport.width < 640 ? "w-16 h-16" : viewport.width < 768 ? "w-20 h-20" : "w-24 h-24"
+                        } ${
+                          isTurn 
+                            ? "border-primary shadow-[0_0_30px_rgba(var(--color-primary-rgb),0.5)] scale-105" 
+                            : "border-white/10 group-hover:border-primary/50"
+                        }`}>
+                          <span className={`font-black uppercase tracking-tighter text-center leading-tight ${
+                            viewport.width < 640 ? "text-[8px]" : "text-[10px]"
+                          } ${isTurn ? "text-primary" : "text-white/80"}`}>{p.nickname}</span>
+                            <div className="flex flex-col gap-0.5 scale-75 sm:scale-100">
+                              <div className="flex gap-1.5 items-center justify-center">
+                                <div className="text-[9px] font-bold text-zinc-500 whitespace-nowrap">{p.cardCount}</div>
+                                <div className="px-1.5 py-0.5 rounded bg-primary/10 border border-primary/10 text-[8px] font-black text-primary uppercase tracking-tighter">S:{p.score || 0}</div>
+                              </div>
+                              <div className="text-[8px] font-black text-zinc-400 italic text-center whitespace-nowrap">
+                                {Number(p.points || 0).toLocaleString()}P
+                              </div>
+                            </div>
+                          
+                          {isDeclarerPlayer && (
+                            <div className="absolute -top-2 -right-2 px-3 py-1 bg-gradient-to-r from-red-600 to-rose-500 rounded-lg text-[9px] font-black text-white shadow-[0_0_15px_rgba(225,29,72,0.4)] border border-white/20 z-10 italic">DEC</div>
+                          )}
+
+                          {isTurn && (
+                            <motion.div 
+                              className="absolute -inset-1 rounded-full border border-primary/30"
+                              animate={{ scale: [1, 1.15, 1], opacity: [0.5, 0, 0.5] }}
+                              transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                            />
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               );
@@ -402,46 +483,127 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
             {/* Table Center (Played Cards) */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="relative w-72 h-72 flex items-center justify-center">
-                <AnimatePresence>
-                  {gameState.currentTrick.map((t: any, i: number) => {
-                    const pIdx = gameState.players.findIndex((p: any) => p.id === t.playerId);
-                    const myIdx = gameState.players.findIndex((pl: any) => pl.nickname === nickname);
-                    const relativeIdx = (pIdx - myIdx + 5) % 5;
-                    const angles = [90, 162, 234, 306, 18]; 
-                    const angle = angles[relativeIdx];
-                    const dist = 75;
-                    const tx = Math.cos((angle * Math.PI) / 180) * dist;
-                    const ty = Math.sin((angle * Math.PI) / 180) * dist;
-                    const isRed = t.card.suit === Suit.HEART || t.card.suit === Suit.DIAMOND;
+                <AnimatePresence mode="popLayout">
+                  {gameState.currentTrick.length > 0 ? (
+                    gameState.currentTrick.map((t: any, i: number) => {
+                      const pIdx = gameState.players.findIndex((p: any) => p.id === t.playerId);
+                      const myIdx = gameState.players.findIndex((pl: any) => pl.nickname === nickname);
+                      const relativeIdx = (pIdx - myIdx + 5) % 5;
+                      const angles = [90, 162, 234, 306, 18]; 
+                      const angle = angles[relativeIdx];
+                      const dist = 75;
+                      const tx = Math.cos((angle * Math.PI) / 180) * dist;
+                      const ty = Math.sin((angle * Math.PI) / 180) * dist;
+                      const isRed = t.card.suit === Suit.HEART || t.card.suit === Suit.DIAMOND;
+                      const trump = gameState.trumpSuit === "NO_TRUMP" ? Suit.NONE : (gameState.trumpSuit as Suit);
+                      const mightyId = getMightyCardId(trump);
+                      const isMighty = t.card.id === mightyId;
+                      const isJoker = t.card.suit === Suit.JOKER;
+                      const isJokerCall = t.isJokerCall;
 
-                    return (
-                      <motion.div
-                        key={`${t.playerId}-${i}`}
-                        className={`absolute w-24 h-36 card-glass p-3 flex flex-col premium-shadow ${isRed ? 'text-red-500' : 'text-zinc-100'}`}
-                        initial={{ scale: 0.5, x: tx * 2.5, y: ty * 2.5, opacity: 0, rotate: 45 }}
-                        animate={{ scale: 1, x: tx, y: ty, opacity: 1, rotate: (relativeIdx - 2) * 8 }}
-                        exit={{ scale: 0.8, opacity: 0, filter: "blur(10px)" }}
-                        transition={{ type: "spring", damping: 12, stiffness: 100 }}
-                      >
-                         <div className="text-sm font-black italic">{t.card.rank === 14 ? 'A' : t.card.rank === 13 ? 'K' : t.card.rank === 12 ? 'Q' : t.card.rank === 11 ? 'J' : t.card.rank}</div>
-                         <div className="text-3xl self-center my-auto drop-shadow-lg">{getSuitSymbol(t.card.suit)}</div>
-                      </motion.div>
-                    );
-                  })}
+                      return (
+                        <motion.div
+                          key={`current-${t.playerId}-${i}`}
+                          className={`absolute card-glass p-2 sm:p-3 flex flex-col premium-shadow transition-all duration-300 ${
+                            viewport.width < 640 ? "w-16 h-24" : viewport.width < 768 ? "w-20 h-30" : "w-24 h-36"
+                          } ${
+                            isRed ? 'text-red-500' : 'text-zinc-100'
+                          } ${
+                            isMighty ? 'ring-2 ring-yellow-400 shadow-[0_0_25px_rgba(250,204,21,0.6)] z-50' : 
+                            isJoker ? 'ring-2 ring-purple-400 shadow-[0_0_25px_rgba(192,132,252,0.6)] z-50' : ''
+                          }`}
+                          initial={{ scale: 0.5, x: tx * 2.5, y: ty * 2.5, opacity: 0, rotate: 45 }}
+                          animate={{ scale: 1, x: tx, y: ty, opacity: 1, rotate: (relativeIdx - 2) * 8 }}
+                          exit={{ scale: 0.8, opacity: 0, filter: "blur(10px)" }}
+                          transition={{ type: "spring", damping: 12, stiffness: 100 }}
+                        >
+                           <div className="flex justify-between items-start">
+                             <div className="text-sm font-black italic">{t.card.rank === 14 ? 'A' : t.card.rank === 13 ? 'K' : t.card.rank === 12 ? 'Q' : t.card.rank === 11 ? 'J' : t.card.rank}</div>
+                             {isMighty && <div className="text-[7px] font-black bg-yellow-400 text-black px-1 rounded-sm tracking-tighter">MIGHTY</div>}
+                             {isJoker && <div className="text-[7px] font-black bg-purple-500 text-white px-1 rounded-sm tracking-tighter">JOKER</div>}
+                           </div>
+                           <div className="text-3xl self-center my-auto drop-shadow-lg">{getSuitSymbol(t.card.suit)}</div>
+                           {isJokerCall && <div className="mt-auto text-[6px] font-black text-center bg-red-600 text-white py-0.5 rounded-full uppercase">Joker Call</div>}
+                        </motion.div>
+                      );
+                    })
+                  ) : (
+                    gameState.lastCompletedTrick?.map((t: any, i: number) => {
+                      const pIdx = gameState.players.findIndex((p: any) => p.id === t.playerId);
+                      const myIdx = gameState.players.findIndex((pl: any) => pl.nickname === nickname);
+                      const relativeIdx = (pIdx - myIdx + 5) % 5;
+                      const angles = [90, 162, 234, 306, 18]; 
+                      const angle = angles[relativeIdx];
+                      const dist = 75;
+                      const tx = Math.cos((angle * Math.PI) / 180) * dist;
+                      const ty = Math.sin((angle * Math.PI) / 180) * dist;
+                      const isRed = t.card.suit === Suit.HEART || t.card.suit === Suit.DIAMOND;
+
+                      return (() => {
+                        const isMighty = t.card.suit === (gameState.trumpSuit === 'SPADE' ? 'DIAMOND' : 'SPADE') && t.card.rank === 14;
+                        const isJoker = t.card.suit === 'JOKER';
+                        const suitColor = t.card.suit === 'HEART' || t.card.suit === 'DIAMOND' ? 'text-red-500' : 'text-zinc-100';
+                        
+                        return (
+                          <motion.div
+                            key={`last-${t.playerId}-${i}`}
+                            className={`absolute card-glass p-2 sm:p-3 flex flex-col premium-shadow opacity-60 grayscale-[0.5] border-2 ${
+                              viewport.width < 640 ? "w-16 h-24" : viewport.width < 768 ? "w-20 h-30" : "w-24 h-36"
+                            } ${
+                              isMighty ? "border-yellow-400/40 shadow-[0_0_15px_rgba(250,204,21,0.3)]" : 
+                              isJoker ? "border-purple-400/40 shadow-[0_0_15px_rgba(168,85,247,0.3)]" : "border-white/5"
+                            } ${suitColor}`}
+                            initial={{ opacity: 0 }}
+                            animate={{ x: tx, y: ty, opacity: 0.6, rotate: (relativeIdx - 2) * 8 }}
+                            exit={{ opacity: 0 }}
+                          >
+                             <div className="text-sm font-black italic">{t.card.rank === 14 ? 'A' : t.card.rank === 13 ? 'K' : t.card.rank === 12 ? 'Q' : t.card.rank === 11 ? 'J' : t.card.rank}</div>
+                             <div className="text-3xl self-center my-auto drop-shadow-lg">{getSuitSymbol(t.card.suit)}</div>
+                             {isMighty && <div className="absolute top-1 right-2 text-[8px] font-black text-yellow-400 uppercase italic">Mighty</div>}
+                          </motion.div>
+                        );
+                      })();
+                    })
+                  )}
                 </AnimatePresence>
-                {gameState.currentTrick.length === 0 && gameState.lastTrickWinner && (
-                  <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="text-zinc-600 text-[10px] font-black uppercase tracking-[0.2em] text-center italic bg-white/5 py-2 px-4 rounded-full border border-white/5">
-                    Trick Winner: {gameState.lastTrickWinner}
+                {gameState.currentTrick.length === 0 && gameState.lastWinnerId && !lastTrickResult && (
+                  <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} className="absolute -bottom-20 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1">
+                    <div className="text-primary text-[10px] font-black uppercase tracking-[0.2em] italic bg-primary/10 py-1 px-3 rounded-full border border-primary/20">
+                      Last Trick Winner
+                    </div>
+                    <div className="text-white text-sm font-black uppercase tracking-widest drop-shadow-lg">
+                      {gameState.players.find((p: any) => p.id === gameState.lastWinnerId)?.nickname || "Winner"}
+                    </div>
                   </motion.div>
                 )}
+
+                {/* Trick Result Message */}
+                <AnimatePresence>
+                  {lastTrickResult && (
+                    <motion.div
+                      initial={{ scale: 0, opacity: 0 }}
+                      animate={{ scale: 1.2, opacity: 1 }}
+                      exit={{ scale: 0.5, opacity: 0, y: -50 }}
+                      className="absolute z-[1000] flex flex-col items-center justify-center gap-2"
+                    >
+                      <div className="text-[10px] font-black uppercase tracking-[0.5em] text-primary/60">Trick Winner</div>
+                      <div className="text-4xl font-black italic text-white drop-shadow-[0_0_20px_rgba(var(--color-primary-rgb),0.8)]">
+                        {gameState.players.find((p: any) => p.id === lastTrickResult.winnerId)?.nickname}
+                      </div>
+                      {lastTrickResult.isJokerCalled && (
+                        <div className="px-4 py-1 bg-red-600 rounded-full text-[10px] font-black uppercase tracking-widest text-white shadow-xl">Joker Called!</div>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             </div>
           </div>
         </div>
 
         {/* My Hand */}
-        <div className="px-12 pb-12 flex justify-center h-[260px] relative z-30">
-          <div className="flex -space-x-14 relative items-end">
+        <div className="px-6 sm:px-12 pb-10 sm:pb-20 flex justify-center h-[180px] sm:h-[240px] md:h-[300px] relative z-30 perspective-1000">
+          <div className={`flex relative items-end preserve-3d ${viewport.width < 640 ? "-space-x-8" : "-space-x-12"}`}>
             <AnimatePresence>
               {gameState.myCards?.map((card: any, idx: number) => {
                 const isSelected = selectedDiscards.includes(card.id);
@@ -471,15 +633,19 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
                     className="relative cursor-pointer group"
                     initial={{ y: 200, opacity: 0, scale: 0.8 }}
                     animate={{ 
-                      y: isSelected || isViewing || isSelectedToPlay ? -50 : (canPlayByState && isPlayable) ? -10 : 0, 
+                      y: isSelected || isViewing || isSelectedToPlay ? -80 : (canPlayByState && isPlayable) ? -30 : -20, 
                       opacity: (canPlayByState && !isPlayable) ? 0.3 : 1,
                       rotate: (isViewing || isSelectedToPlay) ? 0 : (idx - (gameState.myCards.length / 2)) * 3,
+                      rotateX: isViewing || isSelectedToPlay ? 0 : 10,
+                      translateZ: isViewing || isSelectedToPlay ? 50 : 0,
                       zIndex: (isViewing || isSelectedToPlay) ? 1000 : (10 + idx)
                     }}
                     whileHover={{ 
-                      y: isSelected || isViewing || isSelectedToPlay ? -70 : -40, 
-                      scale: 1.1,
+                      y: isSelected || isViewing || isSelectedToPlay ? -120 : -95, 
+                      scale: 1.15,
                       rotate: 0,
+                      rotateX: 0,
+                      translateZ: 100,
                       zIndex: 2000
                     }}
                     onClick={() => {
@@ -531,16 +697,50 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
                       )}
                     </AnimatePresence>
                     
-                    <div className={`w-[124px] h-[184px] card-glass border-2 flex flex-col p-4 shadow-2xl transition-all ${
-                      (canPlayByState && isPlayable) || canDiscard || isViewing || isSelectedToPlay ? "border-primary/40 group-hover:border-primary group-hover:shadow-[0_0_30px_rgba(var(--color-primary-rgb),0.3)]" : "border-white/5"
-                    } ${isSelected || isSelectedToPlay ? "border-accent ring-2 ring-accent/30 shadow-[0_0_20px_rgba(var(--color-accent-rgb),0.6)]" : ""} ${card.suit === Suit.HEART || card.suit === Suit.DIAMOND ? 'text-red-500' : 'text-zinc-100'}`}>
-                       <span className="text-xl font-black italic select-none leading-none">{card.rank === 14 ? 'A' : card.rank === 13 ? 'K' : card.rank === 12 ? 'Q' : card.rank === 11 ? 'J' : card.rank}</span>
-                       <span className="text-3xl mt-1.5 select-none">{getSuitSymbol(card.suit)}</span>
-                       
-                       {isSelected && (
-                        <div className="mt-auto self-center bg-accent text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-widest text-white shadow-lg">Discard</div>
-                      )}
-                    </div>
+                    {(() => {
+                      const isMighty = card.suit === (gameState.trumpSuit === 'SPADE' ? 'DIAMOND' : 'SPADE') && card.rank === 14;
+                      const isJoker = card.suit === 'JOKER';
+                      const suitColor = card.suit === 'HEART' || card.suit === 'DIAMOND' ? 'text-red-500' : 'text-zinc-100';
+                      
+                      return (
+                        <div className={`card-glass border flex flex-col p-2.5 sm:p-4 shadow-2xl transition-all relative overflow-hidden preserve-3d ${
+                          viewport.width < 640 ? "w-[80px] h-[120px]" : viewport.width < 768 ? "w-[110px] h-[160px]" : "w-[130px] h-[190px]"
+                        } ${
+                          (canPlayByState && isPlayable && !isAnimating) || canDiscard || isViewing || isSelectedToPlay 
+                            ? isMighty ? "border-yellow-400/60 ring-1 ring-yellow-400/20 group-hover:border-yellow-400" :
+                              isJoker ? "border-purple-400/60 ring-1 ring-purple-400/20 group-hover:border-purple-400" :
+                              "border-white/10 group-hover:border-primary group-hover:shadow-[0_20px_40px_rgba(0,0,0,0.6),0_0_30px_rgba(var(--color-primary-rgb),0.3)] cursor-pointer" 
+                            : "border-white/5 opacity-40 cursor-not-allowed"
+                        } ${isSelected || isSelectedToPlay ? "border-accent ring-2 ring-accent/30 shadow-[0_0_20px_rgba(var(--color-accent-rgb),0.6)]" : ""} ${suitColor}`}>
+                           
+                           {/* 3D Lighting Layer */}
+                           <div className="card-3d-effect" />
+                           
+                           {/* Background Glow for Special Cards */}
+                           {isMighty && <div className="absolute inset-0 bg-gradient-to-br from-yellow-400/10 to-transparent pointer-events-none" />}
+                           {isJoker && <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-transparent pointer-events-none" />}
+
+                           <div className="flex justify-between items-start">
+                             <span className="text-2xl font-black italic select-none leading-none">{card.rank === 14 ? 'A' : card.rank === 13 ? 'K' : card.rank === 12 ? 'Q' : card.rank === 11 ? 'J' : card.rank}</span>
+                             {isMighty && <span className="text-[9px] font-black text-yellow-400 uppercase italic tracking-tighter">Mighty</span>}
+                             {isJoker && <span className="text-[9px] font-black text-purple-400 uppercase italic tracking-tighter">Joker</span>}
+                           </div>
+                           
+                           <span className="text-5xl mt-3 select-none self-center drop-shadow-[0_0_15px_rgba(255,255,255,0.2)]">
+                             {getSuitSymbol(card.suit)}
+                           </span>
+                           
+                           {/* Center Graphic for high ranks */}
+                           <div className="mt-auto flex justify-end">
+                              <span className="text-2xl opacity-20 font-black italic leading-none">{card.rank === 14 ? 'A' : card.rank === 13 ? 'K' : card.rank === 12 ? 'Q' : card.rank === 11 ? 'J' : ''}</span>
+                           </div>
+
+                           {isSelected && (
+                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-accent text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-widest text-white shadow-lg">Discard</div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </motion.div>
                 );
               })}
@@ -622,6 +822,46 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
               )}
             </div>
           )}
+          {/* In-game Error/Alert Modal */}
+          {showErrorModal && (
+            <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 backdrop-blur-md px-6">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                className="relative w-full max-w-[320px] p-7 bg-black/80 border border-white/10 rounded-[32px] shadow-2xl overflow-hidden"
+              >
+                {/* Visual Accent */}
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-24 h-1 bg-gradient-to-r from-red-600 to-rose-500 blur-[4px] opacity-70" />
+                
+                <div className="flex flex-col items-center text-center">
+                  <div className="w-12 h-12 bg-red-500/15 border border-red-500/20 rounded-full flex items-center justify-center mb-5 animate-pulse">
+                    <svg className="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                  </div>
+                  
+                  <h2 className="text-lg font-black italic tracking-tight mb-2 uppercase text-white">System <span className="text-red-500">Alert</span></h2>
+                  <p className="text-xs text-zinc-400 font-bold leading-relaxed mb-7 whitespace-pre-wrap">
+                    {gameError}
+                  </p>
+
+                  <button 
+                    onClick={() => {
+                      setShowErrorModal(false);
+                      setGameError(null);
+                      clearError();
+                    }}
+                    className="w-full py-3 bg-white text-black hover:bg-zinc-200 rounded-xl font-black text-[11px] uppercase tracking-widest transition-all active:scale-95 shadow-[0_0_15px_rgba(255,255,255,0.15)] group relative overflow-hidden"
+                  >
+                    <span className="relative z-10">Confirm</span>
+                    <div className="absolute inset-0 bg-gradient-to-r from-zinc-300/0 via-black/5 to-zinc-300/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-500" />
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+
           {isMyFriendSelect && (
             <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-xl pointer-events-auto">
               <motion.div 
@@ -749,8 +989,8 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
         </AnimatePresence>
       </div>
 
-      {/* CHATTING SIDEBAR (Premium Polishing) */}
-      <div className="w-84 border-l border-white/5 bg-black/40 backdrop-blur-[40px] flex flex-col relative z-50">
+      {/* CHATTING SIDEBAR (Premium Polishing) - Desktop */}
+      <div className="hidden lg:flex w-72 h-screen sticky top-0 border-l border-white/5 bg-black/40 backdrop-blur-[40px] flex flex-col relative z-50">
         <div className="p-8 border-b border-white/5 flex items-center justify-between">
             <span className="font-black text-[11px] uppercase tracking-[0.4em] text-zinc-400 italic">Comms Link</span>
             <div className="flex gap-1">
@@ -760,15 +1000,15 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
             </div>
         </div>
         
-        <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
           {messages.map((msg, i) => {
             const isSystem = msg.sender === "SYSTEM";
             const isMe = msg.sender === nickname;
             return (
               <motion.div key={i} initial={{ opacity: 0, x: 15 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.05 }} className={`flex flex-col ${isSystem ? "items-center" : isMe ? "items-end" : "items-start"}`}>
-                {!isSystem && <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest mb-2 mr-1">{msg.sender}</span>}
-                <div className={`px-5 py-3 rounded-2xl text-[13px] leading-relaxed max-w-[90%] font-medium ${
-                  isSystem ? "bg-white/[0.03] border border-white/5 text-zinc-500 text-[10px] italic py-2" :
+                {!isSystem && <span className="text-[8px] font-black text-zinc-600 uppercase tracking-widest mb-1.5 mr-1">{msg.sender}</span>}
+                <div className={`px-4 py-2.5 rounded-2xl text-[12px] leading-relaxed max-w-[95%] font-medium ${
+                  isSystem ? "bg-white/[0.03] border border-white/5 text-zinc-500 text-[9px] italic py-2" :
                   isMe ? "bg-primary text-white premium-shadow" : "bg-white/5 border border-white/5 text-zinc-300"
                 }`}>
                   {msg.text}
@@ -778,10 +1018,58 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
           })}
         </div>
 
-        <form onSubmit={(e) => { e.preventDefault(); if(chatInput.trim()) { sendMessage(chatInput); setChatInput(""); } }} className="p-6 bg-white/[0.02]">
-          <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Type a message..." className="w-full bg-black/60 border border-white/5 rounded-2xl px-5 py-4 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold placeholder:text-zinc-700" />
+        <form onSubmit={(e) => { e.preventDefault(); if(chatInput.trim()) { sendMessage(chatInput); setChatInput(""); } }} className="p-4 bg-white/[0.02]">
+          <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Comms message..." className="w-full bg-black/60 border border-white/5 rounded-2xl px-5 py-3.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-bold placeholder:text-zinc-700" />
         </form>
       </div>
+
+      {/* MOBILE CHAT OVERLAY */}
+      <AnimatePresence>
+        {isChatOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsChatOpen(false)}
+              className="lg:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-[100]"
+            />
+            <motion.div 
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="lg:hidden fixed inset-y-0 right-0 w-[85%] max-w-[320px] bg-zinc-950/90 backdrop-blur-[40px] border-l border-white/10 z-[101] flex flex-col shadow-2xl"
+            >
+              <div className="p-6 border-b border-white/5 flex items-center justify-between">
+                <span className="font-black text-[11px] uppercase tracking-[0.4em] text-zinc-400 italic">Mobile Comms</span>
+                <button onClick={() => setIsChatOpen(false)} className="p-2 hover:bg-white/5 rounded-full text-zinc-500">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                </button>
+              </div>
+              
+              <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+                {messages.map((msg, i) => (
+                  <div key={i} className={`flex flex-col ${msg.sender === "SYSTEM" ? "items-center" : msg.sender === nickname ? "items-end" : "items-start"}`}>
+                    {msg.sender !== "SYSTEM" && <span className="text-[8px] font-black text-zinc-600 uppercase mb-1">{msg.sender}</span>}
+                    <div className={`px-4 py-2 rounded-2xl text-[13px] ${
+                      msg.sender === "SYSTEM" ? "bg-white/5 text-zinc-500 text-[10px] italic" :
+                      msg.sender === nickname ? "bg-primary text-white" : "bg-white/10 text-zinc-300"
+                    }`}>
+                      {msg.text}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <form onSubmit={(e) => { e.preventDefault(); if(chatInput.trim()) { sendMessage(chatInput); setChatInput(""); } }} className="p-4 bg-black/40 border-t border-white/5">
+                <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Type a message..." className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+              </form>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
 
       {/* RESULT OVERLAY */}
       <AnimatePresence>
@@ -792,15 +1080,15 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/90 backdrop-blur-2xl p-6"
           >
-            <motion.div 
-              initial={{ scale: 0.9, y: 20, opacity: 0 }}
-              animate={{ scale: 1, y: 0, opacity: 1 }}
-              transition={{ type: "spring", damping: 20, stiffness: 100 }}
-              className="max-w-4xl w-full glass rounded-[4rem] border-white/10 overflow-hidden relative"
-            >
-              <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-purple-600/10 pointer-events-none" />
-              
-              <div className="p-16 flex flex-col items-center">
+              <motion.div 
+                initial={{ scale: 0.9, y: 20, opacity: 0 }}
+                animate={{ scale: 1, y: 0, opacity: 1 }}
+                transition={{ type: "spring", damping: 20, stiffness: 100 }}
+                className="max-w-xl w-full max-h-[95vh] glass rounded-[2.5rem] md:rounded-[3rem] border-white/10 flex flex-col relative overflow-hidden"
+              >
+                <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-purple-600/10 pointer-events-none" />
+                
+                <div className="flex-1 overflow-y-auto w-full p-6 md:p-10 flex flex-col items-center custom-scrollbar">
                 <motion.div 
                   initial={{ scale: 0 }}
                   animate={{ scale: 1 }}
@@ -809,55 +1097,94 @@ export default function GamePage({ params }: { params: Promise<{ id: string }> }
                     result?.isWin ? "bg-green-500/20 border-green-500 text-green-400 shadow-[0_0_50px_rgba(34,197,94,0.4)]" : "bg-red-500/20 border-red-500 text-red-400 shadow-[0_0_50px_rgba(239,68,68,0.4)]"
                   }`}
                 >
-                  <span className="text-5xl font-black">{result?.isWin ? "W" : "L"}</span>
+                  <span className="text-3xl md:text-4xl font-black">{result?.isWin ? "W" : "L"}</span>
                 </motion.div>
 
-                <h1 className="text-6xl font-black italic tracking-tighter uppercase mb-2">
+                <h1 className="text-2xl md:text-4xl font-black italic tracking-tighter uppercase mb-1 text-center leading-none">
                   {result?.isWin ? "Victory Reached" : "Mission Failed"}
                 </h1>
-                <p className="text-zinc-500 font-black tracking-[0.4em] uppercase text-xs mb-12">System Final Settlement</p>
+                <div className="flex flex-col items-center gap-1 mb-6 md:mb-8">
+                  <p className="text-zinc-500 font-black tracking-[0.4em] uppercase text-[10px]">System Final Settlement</p>
+                  {!result?.isWin && (
+                    <p className="text-red-400/80 font-bold text-[9px] uppercase tracking-tighter">
+                      Contract of {gameState.highBidAmount} cards not met (Deficit: {gameState.highBidAmount - (result?.actualScore || 0)})
+                    </p>
+                  )}
+                  {result?.isWin && (
+                    <p className="text-green-400/80 font-bold text-[9px] uppercase tracking-tighter">
+                      Contract of {gameState.highBidAmount} cards fulfilled successfully
+                    </p>
+                  )}
+                </div>
 
-                <div className="grid grid-cols-3 gap-8 w-full mb-16">
-                  <div className="glass p-8 rounded-[2.5rem] border-white/5 flex flex-col items-center">
-                    <span className="text-[10px] font-black text-zinc-600 uppercase tracking-widest mb-2">Contract Status</span>
-                    <span className="text-2xl font-black">{gameState.highBidAmount} {getSuitSymbol(gameState.highBidSuit || "")}</span>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4 w-full mb-6 md:mb-8">
+                  <div className="glass p-4 md:p-6 rounded-[1.5rem] md:rounded-[2rem] border-white/5 flex flex-col items-center">
+                    <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest mb-1.5">Contract Status</span>
+                    <span className="text-lg md:text-xl font-black">{gameState.highBidAmount} {getSuitSymbol(gameState.highBidSuit || "")}</span>
                   </div>
-                  <div className="glass p-8 rounded-[2.5rem] border-white/5 flex flex-col items-center bg-white/5">
-                    <span className="text-[10px] font-black text-zinc-600 uppercase tracking-widest mb-2">Final Score</span>
-                    <span className={`text-4xl font-black ${result?.isWin ? "text-green-400" : "text-red-400"}`}>{result?.actualScore} / 20</span>
+                  <div className="glass p-4 md:p-6 rounded-[1.5rem] md:rounded-[2rem] border-white/5 flex flex-col items-center bg-white/5">
+                    <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest mb-1.5">Final Score</span>
+                    <div className="flex flex-col items-center">
+                      <span className={`text-2xl md:text-3xl font-black ${result?.isWin ? "text-green-400" : "text-red-400"}`}>
+                        {result?.actualScore} / 20
+                      </span>
+                      {result?.trickScore !== undefined && result?.floorScore !== undefined && (
+                        <span className="text-[8px] font-bold text-zinc-500 mt-0.5 uppercase">
+                          Tricks: {result.trickScore} + K: {result.floorScore}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <div className="glass p-8 rounded-[2.5rem] border-white/5 flex flex-col items-center">
-                    <span className="text-[10px] font-black text-zinc-600 uppercase tracking-widest mb-2">Result</span>
-                    <span className="text-2xl font-black uppercase tracking-wider">{result?.isWin ? "Success" : "Failure"}</span>
+                  <div className="glass p-4 md:p-6 rounded-[1.5rem] md:rounded-[2rem] border-white/5 flex flex-col items-center">
+                    <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest mb-1.5">Result</span>
+                    <span className="text-lg md:text-xl font-black uppercase tracking-wider">{result?.isWin ? "Success" : "Failure"}</span>
                   </div>
                 </div>
 
-                <div className="w-full space-y-4 mb-12">
-                   <h3 className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.3em] text-center">Protocol Members</h3>
-                   <div className="flex flex-wrap justify-center gap-4">
-                     {gameState.players.map((p: any) => (
-                       <div key={p.id} className="flex flex-col items-center gap-2 group">
-                          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center border-2 bg-black/40 ${p.nickname === nickname ? "border-primary" : "border-white/5"}`}>
-                             <span className="text-xl font-black italic">{p.nickname[0]}</span>
-                          </div>
-                          <span className={`text-[10px] font-black ${p.nickname === nickname ? "text-primary" : "text-zinc-500"}`}>{p.nickname}</span>
-                       </div>
-                     ))}
+                <div className="w-full flex flex-col md:flex-row gap-6 md:gap-0 mb-6 md:mb-8 items-stretch">
+                   {/* Declarer Side */}
+                   <div className="flex-1 space-y-2">
+                     <h3 className="text-[9px] font-black text-primary uppercase tracking-[0.3em] text-center">Declarer Side</h3>
+                     <div className="flex flex-wrap justify-center gap-4">
+                        {gameState.players.filter((p: any) => p.id === result?.bidderId || p.id === result?.friendId).map((p: any) => (
+                           <ResultPlayerItem key={p.id} p={p} result={result} isAlly={true} currentNickname={nickname} />
+                        ))}
+                     </div>
+                   </div>
+
+                   <div className="hidden md:block w-px bg-white/5 mx-4 self-stretch" />
+
+                   {/* Opposition Side */}
+                   <div className="flex-1 space-y-2">
+                     <h3 className="text-[9px] font-black text-zinc-600 uppercase tracking-[0.3em] text-center">Opposition Side</h3>
+                     <div className="flex flex-wrap justify-center gap-4">
+                        {gameState.players.filter((p: any) => p.id !== result?.bidderId && p.id !== result?.friendId).map((p: any) => (
+                           <ResultPlayerItem key={p.id} p={p} result={result} isAlly={false} currentNickname={nickname} />
+                        ))}
+                     </div>
                    </div>
                 </div>
 
-                <div className="flex gap-6 w-full">
+                <div className="flex flex-col md:flex-row gap-3 md:gap-4 w-full mt-2">
                   <button 
-                    onClick={() => window.location.href = "/lobby"}
-                    className="flex-1 py-6 rounded-[2rem] bg-white text-black font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-2xl"
+                    onClick={async () => {
+                      await leaveRoom();
+                      window.location.href = "/lobby";
+                    }}
+                    className="flex-1 py-3 md:py-4 rounded-[1rem] md:rounded-[1.25rem] bg-white text-black text-xs md:text-sm font-black uppercase tracking-widest hover:scale-[1.02] active:scale-95 transition-all shadow-xl"
                   >
                     Return to Hub
                   </button>
                   <button 
-                    onClick={() => window.location.href = "/lobby"}
-                    className="flex-1 py-6 rounded-[2rem] bg-indigo-600 text-white font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-2xl shadow-indigo-500/20"
+                    onClick={() => {
+                      if (isHost) {
+                        restartGame();
+                      }
+                    }}
+                    className={`flex-1 py-3 md:py-4 rounded-[1rem] md:rounded-[1.25rem] ${isHost ? "bg-indigo-600 shadow-indigo-500/20" : "bg-indigo-600/50 cursor-not-allowed"} text-white text-xs md:text-sm font-black uppercase tracking-widest hover:scale-[1.02] active:scale-95 transition-all shadow-xl`}
+                    disabled={!isHost}
                   >
-                    Next Mission
+                    {isHost ? "Next Mission" : "Waiting for Host"}
                   </button>
                 </div>
               </div>
@@ -925,5 +1252,28 @@ function PlayerCard({ player: p, x, y, isDeclarerPlayer, timeoutMs }: any) {
         </div>
       )}
     </motion.div>
+  );
+}
+function ResultPlayerItem({ p, result, isAlly, currentNickname }: any) {
+  const isBidder = p.id === result?.bidderId;
+  const isFriend = p.id === result?.friendId;
+
+  return (
+    <div className="flex flex-col items-center gap-1 md:gap-2 group relative">
+       <div className={`w-10 h-10 md:w-12 md:h-12 rounded-[1rem] md:rounded-[1.25rem] flex flex-col items-center justify-center border-2 bg-black/40 relative ${p.nickname === currentNickname ? "border-primary" : isAlly ? "border-primary/40" : "border-white/5"}`}>
+          <span className="text-lg md:text-xl font-black italic leading-none">{p.nickname[0]}</span>
+          {isAlly && (
+            <div className={`absolute -top-1.5 -right-1.5 ${isBidder ? 'bg-accent' : 'bg-primary'} text-[6px] md:text-[7px] font-black px-1 md:px-1.5 py-0.2 md:py-0.5 rounded-sm uppercase tracking-tighter shadow-lg`}>
+              {isBidder ? 'M' : 'A'}
+            </div>
+          )}
+          <div className="mt-0.5 px-1 md:px-1.5 py-0.2 md:py-0.5 rounded-sm bg-white/5 border border-white/5 text-[7px] md:text-[8px] font-black text-white/80">
+             {p.score || 0}
+          </div>
+       </div>
+       <div className="flex flex-col items-center overflow-hidden w-full">
+         <span className={`text-[8px] md:text-[9px] font-black truncate w-full text-center ${p.nickname === currentNickname ? "text-primary" : "text-zinc-600"}`}>{p.nickname}</span>
+       </div>
+    </div>
   );
 }

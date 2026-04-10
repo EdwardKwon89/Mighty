@@ -43,10 +43,14 @@ export class GameRoom extends EventEmitter {
   public leadSuit: Suit | null = null;
   
   public turnIndex: number = 0;
+  private lastCompletedTrick: { playerId: string; card: Card }[] = [];
+  private lastWinnerId: string | null = null;
   public isJokerCalledInCurrentTrick: boolean = false;
   public hasSeenHidden: boolean = false;
   public timeoutDuration: number = 60000; // 60s (Increased for verification)
   private timer: NodeJS.Timeout | null = null;
+  private botActionTimeout: NodeJS.Timeout | null = null;
+  private lastProcessedTurnKey: string = "";
 
   constructor(id: string) {
     super();
@@ -56,10 +60,12 @@ export class GameRoom extends EventEmitter {
   public async addPlayer(id: string, nickname: string, initialPoints: number = 0, isBot: boolean = false) {
     const existingIndex = this.players.findIndex(p => p.nickname === nickname);
     if (existingIndex !== -1) {
-      // 재접속 시: 소켓 ID만 교체하고 기존 상태(isBot, cards 등) 유지
+      // 재접속 시: 소켓 ID 교체 및 봇 상태 해제 (인간 플레이어 복귀)
       this.players[existingIndex].id = id;
       this.players[existingIndex].isJoined = true;
-      // 포인트는 DB의 최신 정보를 반영하되, 게임 내 다른 상태는 건드리지 않음
+      this.players[existingIndex].isBot = false; // 봇에서 인간으로 복구
+      
+      // 포인트 최신화
       if (initialPoints !== undefined) {
         this.players[existingIndex].points = initialPoints;
       }
@@ -135,15 +141,24 @@ export class GameRoom extends EventEmitter {
   public removePlayer(id: string) {
     const idx = this.players.findIndex(p => p.id === id);
     if (idx !== -1) {
-      const player = this.players[idx];
+      const p = this.players[idx];
+      const removedNickname = p.nickname;
       
-      // 봇은 절대 수동으로 삭제하지 않음 (방이 폭파될 때만 삭제)
-      if (player.isBot) {
-        console.log(`[SAFEGUARD] Prevented bot ${player.nickname} removal.`);
-        return false;
+      // 게임 진행 중이면 봇으로 대체하여 인덱스 유지
+      if (this.state !== GameState.WAITING && this.state !== GameState.READY && this.state !== GameState.RESULT) {
+        console.log(`[ROOM] Player ${removedNickname} left. Replacing with BOT for consistency.`);
+        p.isBot = true;
+        p.id = `BOT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        
+        // 만약 이 플레이어의 턴이면 즉시 봇 플레이 시도
+        if ((this.state === GameState.BIDDING && this.currentBidderIndex === idx) || 
+            (this.state === GameState.PLAYING && this.turnIndex === idx)) {
+          this.startTimer();
+        }
+        this.emit("update");
+        return true;
       }
-
-      const removedNickname = player.nickname;
+      
       this.players.splice(idx, 1);
       
       // READY 상태에서 인원이 줄면 다시 WAITING으로 변경
@@ -151,7 +166,8 @@ export class GameRoom extends EventEmitter {
         this.state = GameState.WAITING;
       }
       
-      console.log(`Player ${removedNickname} (${id}) removed from room ${this.id}`);
+      console.log(`[ROOM] Player ${removedNickname} (${id}) removed. Room size: ${this.players.length}`);
+      this.emit("update");
       return true;
     }
     return false;
@@ -172,31 +188,45 @@ export class GameRoom extends EventEmitter {
 
   private checkBotTurn() {
     let currentPlayer: Player | null = null;
+    let currentKey = "";
+
     if (this.state === GameState.BIDDING) {
       currentPlayer = this.players[this.currentBidderIndex] || null;
+      currentKey = `BID-${this.currentBidderIndex}-${this.players.filter(p => p.isPassed).length}`;
     } else if (this.state === GameState.EXCHANGING || this.state === GameState.SELECTING_FRIEND) {
       currentPlayer = this.players[this.highBidderIndex] || null;
+      currentKey = `${this.state}-${this.highBidderIndex}`;
     } else if (this.state === GameState.PLAYING) {
       currentPlayer = this.players[this.turnIndex] || null;
+      currentKey = `PLAY-${this.trickCount}-${this.turnIndex}-${this.currentTrick.length}`;
+    }
+
+    // 이미 처리 중인 턴이거나, 다음 턴으로 넘어갔다면 중복 실행 방지
+    if (this.lastProcessedTurnKey === currentKey) {
+      console.log(`[BOT_TURN_SKIP] Key ${currentKey} already processed.`);
+      return;
     }
 
     if (currentPlayer && currentPlayer.isBot) {
+      console.log(`[BOT_TURN_DETECTED] Player: ${currentPlayer.nickname}, State: ${this.state}, Key: ${currentKey}`);
+      this.lastProcessedTurnKey = currentKey;
       const isBidding = this.state === GameState.BIDDING;
-      const delay = isBidding ? 400 + Math.random() * 400 : 1200 + Math.random() * 800; // 비딩은 더 빠르게
-      setTimeout(() => {
-        // 비동기 실행 시점에 상태와 플레이어 존재 여부 재검증
-        const nowPlayer = this.state === GameState.BIDDING ? (this.players[this.currentBidderIndex] || null) :
-                         this.state === GameState.PLAYING ? (this.players[this.turnIndex] || null) :
-                         (this.state === GameState.EXCHANGING || this.state === GameState.SELECTING_FRIEND) ? (this.players[this.highBidderIndex] || null) : null;
-        
+      const delay = isBidding ? 400 + Math.random() * 400 : 500 + Math.random() * 500;
+
+      if (this.botActionTimeout) clearTimeout(this.botActionTimeout);
+      this.botActionTimeout = setTimeout(() => {
+        try {
+          // 실행 시점에 현재 플레이어와 상태가 여전히 유효한지 재확인
+          const nowPlayer = this.state === GameState.BIDDING ? (this.players[this.currentBidderIndex] || null) :
+                           this.state === GameState.PLAYING ? (this.players[this.turnIndex] || null) :
+                           (this.state === GameState.EXCHANGING || this.state === GameState.SELECTING_FRIEND) ? (this.players[this.highBidderIndex] || null) : null;
+
           if (nowPlayer && currentPlayer && nowPlayer.id === currentPlayer.id && nowPlayer.isBot) {
-            try {
-              this.executeBotAction(nowPlayer);
-            } catch (err) {
-              console.error(`[BOT_CRASH] Error in bot action for ${nowPlayer.nickname}:`, err);
-              // 에러 발생 시 최소한 타임아웃 헨들러가 작동하도록 타이머는 유지
-            }
+            this.executeBotAction(nowPlayer);
           }
+        } catch (err) {
+          console.error(`[BOT_CRASH] Critical error during bot action for ${currentPlayer?.nickname}:`, err);
+        }
       }, delay);
     }
   }
@@ -223,7 +253,25 @@ export class GameRoom extends EventEmitter {
       const discards = player.cards.slice(-3);
       this.handleExchange(player.id, discards, this.highBidSuit as Suit);
     } else if (this.state === GameState.SELECTING_FRIEND) {
-      this.handleSelectFriend(player.id, "NONE");
+      // 봇 전략: 마이티나 조커가 없으면 프렌드로 호출
+      const trump = this.trumpSuit === "NO_TRUMP" ? Suit.SPADE : this.trumpSuit as Suit; // 기본은 스페이드로 가정
+      const mightyId = getMightyCardId(trump);
+      const hasMighty = player.cards.some(c => c.id === mightyId);
+      
+      if (!hasMighty) {
+        // 마이티 호출
+        const mightySuit = mightyId.startsWith('S') ? Suit.SPADE : Suit.DIAMOND;
+        this.handleSelectFriend(player.id, { suit: mightySuit, rank: Rank.ACE, id: mightyId });
+      } else {
+        const hasJoker = player.cards.some(c => c.suit === Suit.JOKER);
+        if (!hasJoker) {
+          // 조커 호출
+          this.handleSelectFriend(player.id, { suit: Suit.JOKER, rank: Rank.JOKER, id: 'J0' });
+        } else {
+          // 마이티와 조커 둘 다 있으면 독식(NONE)
+          this.handleSelectFriend(player.id, "NONE");
+        }
+      }
     } else if (this.state === GameState.PLAYING) {
       const trump = this.trumpSuit === "NO_TRUMP" ? Suit.NONE : this.trumpSuit;
       const mightyCardId = getMightyCardId(trump);
@@ -269,8 +317,14 @@ export class GameRoom extends EventEmitter {
           const card = player.cards[0];
           player.cards = player.cards.filter(c => c.id !== card.id);
           this.currentTrick.push({ playerId: player.id, card });
-          if (this.currentTrick.length === 5) this.finishTrick();
-          else { this.turnIndex = (this.turnIndex + 1) % 5; this.startTimer(); }
+          console.log(`[BOT_FATAL] Forced card: ${card.id}`);
+          if (this.currentTrick.length === 5) {
+            this.finishTrick();
+          } else {
+            this.turnIndex = (this.turnIndex + 1) % 5;
+            this.startTimer();
+          }
+          this.emit("update");
         }
       }
     }
@@ -394,6 +448,9 @@ export class GameRoom extends EventEmitter {
 
     player.cards = player.cards.filter(c => !discards.some(d => d.id === c.id));
     
+    // 버린 카드를 기루(floorCards)로 저장하여 나중에 점수 계산에 사용
+    this.floorCards = discards;
+    
     // 무늬 변경 여부 확인 (비딩 시와 다를 경우 비용 검증 필요할 수 있으나 현재는 exchange에서 최종 확정)
     this.trumpSuit = trump;
     
@@ -456,13 +513,28 @@ export class GameRoom extends EventEmitter {
     if (this.currentTrick.length === 1) {
       this.isJokerCalledInCurrentTrick = isJokerCall;
       this.leadSuit = card.suit === Suit.JOKER ? null : card.suit;
+    } else if (this.leadSuit === null && this.currentTrick.length > 1) {
+      // 조커 리드 시 다음 카드가 리드 슈트 결정
+      this.leadSuit = card.suit === Suit.JOKER ? null : card.suit;
     }
 
     if (this.currentTrick.length === 5) {
-      this.finishTrick();
+      // 1.5초 후 트릭 정산 (UX를 위한 지연)
+      this.emit("update");
+      
+      setTimeout(() => {
+        const result = this.finishTrick();
+        // 트릭 정산 결과를 클라이언트에 명시적으로 알림 (애니메이션 동기화용)
+        this.emit("trick-result", { 
+          winnerId: result.winner.playerId, 
+          isJokerCalled: result.isJokerCalled 
+        });
+        this.emit("update");
+      }, 1500);
     } else {
       this.turnIndex = (this.turnIndex + 1) % 5;
       this.startTimer();
+      this.emit("update");
     }
     return true;
   }
@@ -474,35 +546,48 @@ export class GameRoom extends EventEmitter {
     }));
 
     const trump = this.trumpSuit === "NO_TRUMP" ? Suit.NONE : this.trumpSuit;
-    const mightyCardId = getMightyCardId(trump);
 
-    const winnerResult = evaluateTrick(cardsInTrick, {
+    const result = evaluateTrick(this.currentTrick, {
       trumpSuit: trump,
-      mightyCardId: mightyCardId,
+      mightyCardId: getMightyCardId(trump),
       jokerCallCardId: getJokerCallCardId(trump),
-      isFirstTrick: this.players[0].cards.length === 9,
-      isLastTrick: this.players[0].cards.length === 0,
+      isFirstTrick: this.trickCount === 1,
+      isLastTrick: this.trickCount === 10,
       isJokerCalled: this.isJokerCalledInCurrentTrick
     });
-
-    const winner = winnerResult.winner;
-    this.isJokerCalledInCurrentTrick = false;
-    const winnerId = winner.playerId;
-    const winnerPIdx = this.players.findIndex(p => p.id === winnerId);
+    
+    const { winner, isJokerCalled } = result;
+    
+    let winnerPIdx = this.players.findIndex(p => p.id === winner.playerId);
+    
+    // 만약 플레이어가 나갔거나 해서 ID가 없으면, 닉네임으로라도 찾거나 lead를 준 사람이 승리하는 걸로 방어
+    if (winnerPIdx === -1) {
+      console.warn(`[TRICK] Winner ID ${winner.playerId} not found in current players list. Using lead as winner fallback.`);
+      winnerPIdx = this.players.findIndex(p => p.id === this.currentTrick[0].playerId);
+      if (winnerPIdx === -1) winnerPIdx = (this.highBidderIndex) % 5; // 최후의 보루
+    }
+    console.log(`[TRICK_DONE] Winner: ${winner.playerId}, Cards: ${cardsInTrick.map(c => c.card.id).join(',')}`);
+    
+    // 이전을 저장
+    this.lastCompletedTrick = [...this.currentTrick];
+    this.lastWinnerId = winner.playerId;
 
     const cardsGot = this.currentTrick.map(t => t.card);
     this.players[winnerPIdx].collectedTricks.push(cardsGot);
     
     this.currentTrick = [];
     this.leadSuit = null;
+    this.isJokerCalledInCurrentTrick = false;
     this.trickCount++;
     this.turnIndex = winnerPIdx;
 
-    if (this.players.every(p => p.cards.length === 0)) {
+    if (this.trickCount > 10) {
       this.finishGame();
     } else {
       this.startTimer();
     }
+    
+    return result;
   }
 
   private async finishGame() {
@@ -522,10 +607,17 @@ export class GameRoom extends EventEmitter {
     const friend = this.friendPlayerId ? this.players.find(p => p.id === this.friendPlayerId) : null;
     const friendCards = friend ? friend.collectedTricks.flat() : [];
     
-    const totalScore = calculateScore([...gitCards, ...friendCards]);
+    // 트릭으로 획득한 점수
+    const trickScore = calculateScore([...gitCards, ...friendCards]);
+    
+    // 기루 점수 (마지막 트릭 승자가 주공 측인 경우에만 합산)
+    const isMasterSideWinner = this.lastWinnerId === bidder.id || (this.friendPlayerId && this.lastWinnerId === this.friendPlayerId);
+    const floorScore = isMasterSideWinner ? calculateScore(this.floorCards) : 0;
+    
+    const totalScore = trickScore + floorScore;
     const isWin = totalScore >= this.highBidAmount;
 
-    console.log(`[GAME_RESULT] Score: ${totalScore}/${this.highBidAmount}, Win: ${isWin}`);
+    console.log(`[GAME_RESULT] Trick: ${trickScore}, Floor: ${floorScore}, Total: ${totalScore}/${this.highBidAmount}, Win: ${isWin}`);
 
     const isNoTrump = this.trumpSuit === "NO_TRUMP";
     const isSolo = !this.friendPlayerId;
@@ -574,6 +666,9 @@ export class GameRoom extends EventEmitter {
       const isWinValue: boolean = !!settlement.isWin;
       const isPlayerWin: boolean = !!isWinValue ? isTeam : !isTeam;
       
+      // 봇은 통계 업데이트를 건너뜀
+      if (p.isBot) return;
+
       try {
         const updated = await updateGameResult(
           p.nickname, 
@@ -589,13 +684,66 @@ export class GameRoom extends EventEmitter {
       }
     }));
 
-    // 최종 포인트 반영 후 다시 한번 알림
+    // 최종 포인트 반영 후 다시 한번 알림 및 게임 종료 이벤트 송신
     this.emit("update");
+    
+    this.emit("game-over", {
+      isWin: !!settlement.isWin,
+      actualScore: totalScore,
+      trickScore,
+      floorScore,
+      totalScore,
+      highBidAmount: this.highBidAmount,
+      highBidSuit: this.highBidSuit,
+      highBidderNickname: bidder.nickname,
+      bidderId: bidder.id,
+      friendNickname: friend?.nickname || "없음",
+      friendId: this.friendPlayerId,
+      players: this.players.map(p => ({
+        nickname: p.nickname,
+        points: p.points,
+        collectedTricksCount: p.collectedTricks.length
+      }))
+    });
   }
 
   public setTurnTimeout(ms: number) {
     if (ms >= 30000 && ms <= 120000) {
       this.timeoutDuration = ms;
     }
+  }
+
+  public reset() {
+    console.log(`[ROOM_RESET] Resetting room ${this.id}`);
+    if (this.timer) clearTimeout(this.timer);
+    if (this.botActionTimeout) clearTimeout(this.botActionTimeout);
+    
+    this.state = (this.players.length === 5) ? GameState.READY : GameState.WAITING;
+    this.currentBidderIndex = 0;
+    this.highBidderIndex = -1;
+    this.highBidAmount = 12;
+    this.highBidSuit = "NO_TRUMP";
+    this.trumpSuit = "NO_TRUMP";
+    this.friendCard = null;
+    this.friendPlayerId = null;
+    this.floorCards = [];
+    this.turnIndex = 0;
+    this.hasSeenHidden = false;
+    this.lastProcessedTurnKey = "";
+    this.lastCompletedTrick = [];
+    this.lastWinnerId = null;
+    this.currentTrick = [];
+    this.trickCount = 1;
+    this.leadSuit = null;
+    this.isJokerCalledInCurrentTrick = false;
+    
+    this.players.forEach(p => {
+      p.cards = [];
+      p.isPassed = false;
+      p.bidAmount = 0;
+      p.collectedTricks = [];
+    });
+    
+    this.emit("update");
   }
 }

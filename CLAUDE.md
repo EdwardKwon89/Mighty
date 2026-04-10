@@ -43,9 +43,26 @@
     branch: `main` | `feature/*` | `fix/*`
     style: 불변성 우선 | 함수 50줄 이하 | 파일 800줄 이하 | 가독성 극대화
   
+  UI_CONVENTIONS:
+    theme: Glassmorphism (Glass-like backgrounds, 20px+ blur, subtle white borders)
+    layout: 
+      - Header: 정적 정보(Room#, Version)와 동적 정보(Phase, Trump)를 통합한 상단 고정 바 (Glassmorphic Header)
+      - Sidebar: 유틸리티(채팅 등)는 우측 배치, 고정 폭(320-400px), 상시 스크롤 가능
+    visuals: 
+      - Cards: Mighty(Yellow glow), Joker(Purple glow) 등 특수 카드 전용 시각 효과 필수
+      - Feedback: 인터랙티브 요소(턴 표시 등)에 맥락적 애니메이션(Pulse/Glow) 적용
+  
   GSD_PROCESS:
     trigger: 팀 규모 4~5인 | 3개월 이상 장기 과제 | 대규모 리팩토링
     action: `.planning/CONTEXT.md` (30-100줄) 유지 | `.planning/DECISIONS.md` 기록
+
+  MANDATORY_COMPLETION:
+    rule: "모든 수정 및 기능 구현 완료 전 반드시 다음 절차를 수행해야 함"
+    steps:
+      1. 오류 보고서(`docs/020_Report/detailed/`) 작성 또는 갱신
+      2. 마스터 체크리스트(`docs/030_Checklist/Development_Checklist.md`) 업데이트
+      3. 감사 로그(`docs/030_Checklist/audit_logs/`)에 체크리스트 내용 전수 체크 결과(PASS) 기록
+      4. 위 세 단계 통과 후에만 '완료' 선언 가능
 </rules>
 
 <rhythm>

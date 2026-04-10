@@ -4,11 +4,23 @@ import cors from "@fastify/cors";
 import jwt from "jsonwebtoken";
 import { GameRoom, GameState } from "./game-room.js";
 import { authenticatePlayer, updateGameResult, getPlayerStats } from "@mighty/database";
+import { calculateScore } from "@mighty/engine";
 
 const JWT_SECRET = process.env.JWT_SECRET || "mighty-prime-secret-key-2026";
+const SERVER_INSTANCE_ID = Date.now().toString(36); // 서버 실행 시마다 고유 ID 생성
+
 
 const fastify = Fastify({ logger: true });
-await fastify.register(cors, { origin: "*" });
+
+// Health check endpoint for Render/Cron-job wake-up
+fastify.get("/health", async () => {
+  return { status: "OK", timestamp: new Date().toISOString() };
+});
+
+await fastify.register(cors, { 
+  origin: process.env.FRONTEND_URL || "*",
+  methods: ["GET", "POST"] 
+});
 
 const io = new Server(fastify.server, {
   cors: {
@@ -28,6 +40,13 @@ io.use((socket, next) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as any;
+    
+    // ERR-05: 서버 인스턴스 ID가 일치하지 않으면 세션 만료로 처리
+    if (decoded.instanceId !== SERVER_INSTANCE_ID) {
+      console.log(`[AUTH_REJECT] Instance mismatch. Token: ${decoded.instanceId}, Server: ${SERVER_INSTANCE_ID}`);
+      return next(new Error("SESSION_EXPIRED"));
+    }
+
     socket.data.user = decoded;
     next();
   } catch (err) {
@@ -40,7 +59,7 @@ const rooms = new Map<string, GameRoom>();
 
 // [Cleanup] 상위 테스트 방 완전 박멸 (사용자 요청)
 // 1초마다 PRIME_FIELD_TEST_ 접두사 방이 있으면 삭제
-setInterval(() => {
+const cleanupInterval = setInterval(() => {
   const testRoomPrefix = "prime_field_test_";
   let deleted = false;
   
@@ -56,11 +75,50 @@ setInterval(() => {
 }, 1000);
 
 // 서버 시작 직후 강제 전체 초기화 (1회성)
-setTimeout(() => {
+const initialCleanupTimeout = setTimeout(() => {
   console.log("[INITIAL_CLEANUP] Clearing all rooms to ensure clean slate.");
   rooms.clear();
   broadcastRoomsList();
 }, 3000);
+
+// Graceful Shutdown 로직 개선 (Fixing Exit Code 1 & Force Killing)
+let isShuttingDown = false;
+const shutdown = async (signal: string) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log(`\n[SHUTDOWN] Received ${signal}. Cleaning up...`);
+
+  // 2초 후 강제 종료 (안전장치: 리소스 정리가 지연되어도 tsx의 Force kill 이전에 종료)
+  const forceExit = setTimeout(() => {
+    console.log("[SHUTDOWN] Fail-safe exit triggered.");
+    process.exit(0);
+  }, 2000);
+  if (forceExit.unref) forceExit.unref();
+
+  // 리소스 정리
+  clearInterval(cleanupInterval);
+  clearTimeout(initialCleanupTimeout);
+  
+  // 모든 재접속 타이머 정리
+  if (typeof reconnectTimers !== 'undefined') {
+    reconnectTimers.forEach((timer) => clearTimeout(timer));
+  }
+  
+  try {
+    io.close();
+    await fastify.close();
+    console.log("[SHUTDOWN] Cleanup complete. Exiting gracefully.");
+    process.exit(0);
+  } catch (err) {
+    console.error("[SHUTDOWN] Error during cleanup:", err);
+    process.exit(1);
+  }
+};
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+
 
 // 재접속 대기 타이머 관리 (socket.id가 아닌 닉네임 기반)
 const reconnectTimers = new Map<string, NodeJS.Timeout>();
@@ -86,30 +144,40 @@ async function broadcastLobbyStats() {
   const sockets = await io.fetchSockets();
   const playerMap = new Map<string, any>();
 
-  for (const s of sockets) {
-    const user = s.data.user;
-    if (!user) continue;
+  // 병렬로 유저 정보(포인트 포함) 가져오기
+  const userResults = await Promise.all(
+    Array.from(sockets).map(async (s) => {
+      const user = s.data.user;
+      if (!user?.nickname) return null;
+      const stats = await getPlayerStats(user.nickname);
+      
+      // 현재 참여 중인 방 찾기
+      let status = "LOBBY";
+      let currentRoomId = null;
 
-    // 현재 참여 중인 방 찾기
-    let status = "LOBBY";
-    let currentRoomId = null;
-
-    for (const roomId of s.rooms) {
-      if (rooms.has(roomId)) {
-        const room = rooms.get(roomId)!;
-        currentRoomId = roomId;
-        status = room.state === "WAITING" ? "WAITING" : "PLAYING";
-        break;
+      for (const roomId of s.rooms) {
+        if (rooms.has(roomId)) {
+          const room = rooms.get(roomId)!;
+          currentRoomId = roomId;
+          status = room.state === "WAITING" ? "WAITING" : "PLAYING";
+          break;
+        }
       }
-    }
 
-    // 중복 제거: 마지막 소켓의 상태로 유지
-    playerMap.set(user.id, {
-      nickname: user.nickname,
-      id: user.id,
-      status,
-      roomId: currentRoomId
-    });
+      return {
+        id: user.id,
+        nickname: user.nickname,
+        status,
+        roomId: currentRoomId,
+        points: stats?.points || "0"
+      };
+    })
+  );
+
+  for (const res of userResults) {
+    if (res) {
+      playerMap.set(res.id, res);
+    }
   }
     
   io.emit("lobby-info", {
@@ -136,6 +204,7 @@ function broadcastGameState(roomId: string) {
           id: pl.id,
           nickname: pl.nickname,
           points: pl.points,
+          score: calculateScore(pl.collectedTricks.flat()),
           cardCount: Math.max(0, pl.cards?.length || 0),
           isTurn: (room.state !== GameState.WAITING && room.state !== GameState.READY) && (
                   (room.state === GameState.PLAYING && room.players[room.turnIndex]?.id === pl.id) ||
@@ -158,24 +227,26 @@ function broadcastGameState(roomId: string) {
       });
     });
 
-    // [BOT_TRIGGER] 봇의 턴인지 확인 (안전성 강화)
-    const currentPlayer = room.state === GameState.BIDDING ? room.players[room.currentBidderIndex] :
-                      room.state === GameState.PLAYING ? room.players[room.turnIndex] :
-                      (room.state === GameState.EXCHANGING || room.state === GameState.SELECTING_FRIEND) ? room.players[room.highBidderIndex] : null;
-
-    if (currentPlayer && currentPlayer.isBot && room.state !== GameState.RESULT) {
-      // GameRoom 인스턴스가 존재하고 메서드가 있는 경우에만 호출
-      if (typeof (room as any).checkBotTurn === 'function') {
-        (room as any).checkBotTurn();
-      }
-    }
   } catch (err) {
     console.error(`[ERROR] broadcastGameState failed for room ${roomId}:`, err);
   }
 }
 
 io.on("connection", (socket: Socket) => {
-  console.log("User connected:", socket.id);
+  const user = socket.data.user;
+  console.log("User connected:", socket.id, user?.nickname || "Guest");
+
+  // 미들웨어에서 인증된 경우 클라이언트에 즉시 알림 (ERR-05 해결을 위한 조치)
+  if (user && user.nickname) {
+    // 닉네임으로 최신 포인트를 DB에서 조회 (getPlayerStats 사용)
+    getPlayerStats(user.nickname).then(stats => {
+      socket.emit("authenticated", {
+        token: socket.handshake.auth.token,
+        points: stats?.points || "0",
+        isAdmin: user.isAdmin
+      });
+    });
+  }
 
   socket.on("get-rooms", () => {
     broadcastRoomsList();
@@ -196,6 +267,7 @@ io.on("connection", (socket: Socket) => {
     }
     const newRoom = new GameRoom(roomId);
     newRoom.on("update", () => broadcastGameState(roomId));
+    newRoom.on("game-over", (data) => io.to(roomId).emit("game-over", data));
     rooms.set(roomId, newRoom);
     
     broadcastRoomsList();
@@ -246,7 +318,8 @@ io.on("connection", (socket: Socket) => {
             { 
               id: authResult.id, 
               nickname: authResult.nickname,
-              isAdmin: authResult.isAdmin 
+              isAdmin: authResult.isAdmin,
+              instanceId: SERVER_INSTANCE_ID // 인스턴스 ID 포함
             }, 
             JWT_SECRET, 
             { expiresIn: "24h" }
@@ -294,6 +367,7 @@ io.on("connection", (socket: Socket) => {
       if (!room && roomId !== "LOBBY") {
         room = new GameRoom(roomId);
         room.on("update", () => broadcastGameState(roomId));
+        room.on("game-over", (data) => io.to(roomId).emit("game-over", data));
         rooms.set(roomId, room);
       }
 
@@ -447,6 +521,16 @@ io.on("connection", (socket: Socket) => {
       callback();
     }
   });
+  
+  socket.on("restart-game", ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if (room) {
+      room.reset();
+      broadcastGameState(roomId);
+      broadcastRoomsList();
+      console.log(`Room ${roomId} restarted by ${socket.id}`);
+    }
+  });
 
   socket.on("select-friend", ({ roomId, card }) => {
     try {
@@ -555,13 +639,45 @@ io.on("connection", (socket: Socket) => {
     }
   });
 
+  socket.on("admin:delete-player", async ({ nickname }) => {
+    if (!socket.data.user?.isAdmin) return;
+    const { deletePlayer, getAllPlayersStats } = await import("@mighty/database");
+    try {
+      await deletePlayer(nickname);
+      const players = await getAllPlayersStats();
+      io.emit("admin:players-list", players);
+    } catch (err: any) {
+      socket.emit("error", { message: "유저 삭제 실패" });
+    }
+  });
+
+  socket.on("admin:get-logs", async ({ nickname, page, limit }) => {
+    if (!socket.data.user?.isAdmin) return;
+    const { getPlayerPointLogs } = await import("@mighty/database");
+    try {
+      const result = await getPlayerPointLogs(nickname, page, limit);
+      socket.emit("admin:player-logs", { nickname, ...result });
+    } catch (err: any) {
+      socket.emit("error", { message: "로그 조회 실패" });
+    }
+  });
+
   socket.on("disconnect", () => {
     const user = socket.data.user;
     console.log("User socket disconnected:", socket.id, user?.nickname);
 
     if (user && user.nickname) {
+      // ERR-10: 기존에 해당 닉네임으로 실행 중인 타이머가 있다면 먼저 제거 (중첩 방지)
+      const existingTimer = reconnectTimers.get(user.nickname);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+
       // 1분(60초) 유예 타이머 시작
       const timeout = setTimeout(() => {
+        // 타이머가 실행될 시점에, 여전히 이 타이머가 최신인지 확인 (Identity Check)
+        if (reconnectTimers.get(user.nickname) !== timeout) return;
+
         console.log(`Grace period expired for ${user.nickname}. Cleaning up...`);
         
         // 모든 방에서 이 유저를 제거
@@ -569,7 +685,16 @@ io.on("connection", (socket: Socket) => {
           const playerIdx = room.players.findIndex(p => p.nickname === user.nickname);
           if (playerIdx !== -1) {
             room.removePlayer(room.players[playerIdx].id);
-            if (room.players.filter(p => !p.isBot).length === 0) {
+            
+            // 방 삭제 조건 개선: 
+            // 1. 인간 플레이어가 0명이고 
+            // 2. 방 상태가 대기 중(WAITING/READY)이거나 이미 끝났을(RESULT) 때만 삭제
+            // 게임 진행 중(BIDDING, PLAYING 등)에는 봇으로 돌아가더라도 방을 유지하여 재접속 허용
+            const humanCount = room.players.filter(p => !p.isBot).length;
+            const isGameOverOrWaiting = [GameState.WAITING, GameState.READY, GameState.RESULT].includes(room.state);
+            
+            if (humanCount === 0 && isGameOverOrWaiting) {
+              console.log(`[ROOM_CLEANUP] Deleting empty room ${roomId}`);
               rooms.delete(roomId);
             } else {
               broadcastGameState(roomId);
@@ -589,8 +714,9 @@ io.on("connection", (socket: Socket) => {
 
 const start = async () => {
   try {
-    await fastify.listen({ port: 4000, host: "0.0.0.0" });
-    console.log("Fastify server listening on port 4000");
+    const port = parseInt(process.env.PORT || "4000", 10);
+    await fastify.listen({ port, host: "0.0.0.0" });
+    console.log(`Fastify server listening on port ${port}`);
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

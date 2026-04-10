@@ -4,8 +4,8 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = "file:./dev.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Player {
@@ -37,7 +37,7 @@ model AdminLog {
   reason      String?
   createdAt   DateTime @default(now())
 
-  admin       Player   @relation(fields: [adminId], references: [id])
+  admin       Player   @relation(fields: [adminId], references: [id], onDelete: Cascade)
 }
 
 model GameRoom {
@@ -60,7 +60,7 @@ model GameTrick {
   cards       String   // Played cards JSON string
   winnerId    String?
 
-  room        GameRoom @relation(fields: [roomId], references: [id])
+  room        GameRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
 }
 
 model GameHistory {
@@ -82,8 +82,8 @@ model PlayerInGame {
   role        String   // "BID_WINNER", "FRIEND", "OPPOSITION"
   resultPoints Int     // 해당 판에서 획득/상실한 포인트
 
-  player      Player      @relation(fields: [playerId], references: [id])
-  game        GameHistory @relation(fields: [gameId], references: [id])
+  player      Player      @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  game        GameHistory @relation(fields: [gameId], references: [id], onDelete: Cascade)
 
   @@unique([playerId, gameId])
 }
@@ -96,5 +96,5 @@ model PointLog {
   reason      String?
   createdAt   DateTime @default(now())
 
-  player      Player   @relation(fields: [playerId], references: [id])
+  player      Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
 }

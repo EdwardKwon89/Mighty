@@ -207,3 +207,51 @@ export async function getPlayerStats(nickname: string) {
     })),
   };
 }
+
+/**
+ * 플레이어 완전 삭제 (Admin 전용)
+ */
+export async function deletePlayer(nickname: string) {
+  return prisma.player.delete({
+    where: { nickname },
+  });
+}
+
+/**
+ * 특정 플레이어의 모든 포인트 로그 조회 (페이징 적용)
+ */
+export async function getPlayerPointLogs(nickname: string, page: number = 1, limit: number = 20) {
+  const player = await prisma.player.findUnique({
+    where: { nickname },
+    select: { id: true }
+  });
+
+  if (!player) throw new Error("Player not found");
+
+  const skip = (page - 1) * limit;
+
+  const [logs, totalCount] = await Promise.all([
+    prisma.pointLog.findMany({
+      where: { playerId: player.id },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.pointLog.count({
+      where: { playerId: player.id }
+    })
+  ]);
+
+  return {
+    logs: logs.map(log => ({
+      id: log.id,
+      amount: log.amount,
+      type: log.type,
+      reason: log.reason,
+      createdAt: log.createdAt,
+    })),
+    totalCount,
+    totalPages: Math.ceil(totalCount / limit),
+    currentPage: page
+  };
+}

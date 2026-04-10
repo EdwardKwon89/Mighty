@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { useLobby } from "../../hooks/useLobby";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
+import Link from "next/link";
 
 type FilterStatus = "ALL" | "LOBBY" | "WAITING" | "PLAYING";
 
@@ -11,13 +12,27 @@ export default function LobbyPage() {
   const router = useRouter();
   const { rooms, lobbyInfo, isAdmin, myNickname, createRoom, refreshRooms, logout, error } = useLobby();
   const [newRoomId, setNewRoomId] = useState("");
+  const [clientPoints, setClientPoints] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Sync points from localStorage on mount to avoid hydration mismatch
+    const savedPoints = localStorage.getItem('mighty_points');
+    if (savedPoints) setClientPoints(savedPoints);
+  }, []);
   const [isCreating, setIsCreating] = useState(false);
   const [filterStatus, setFilterStatus] = useState<FilterStatus>("ALL");
 
-  // 위치 정보 저장
+  // 위치 정보 저장 및 세션 필수 체크 (ERR-05)
   useEffect(() => {
+    const token = localStorage.getItem("mighty_token");
+    if (!token) {
+      console.warn("No token found. Unauthorized access to Lobby. Redirecting...");
+      router.push("/");
+      return;
+    }
     localStorage.setItem("mighty_last_location", JSON.stringify({ type: 'LOBBY' }));
-  }, []);
+  }, [router]);
+
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,7 +93,12 @@ export default function LobbyPage() {
             <div className="flex items-center gap-4 bg-white/[0.03] border border-white/10 px-6 py-2.5 rounded-full backdrop-blur-md w-full sm:w-auto justify-center sm:justify-start">
               <div className="flex flex-col items-center sm:items-end">
                 <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Logged in as</span>
-                <span className="text-sm font-black text-blue-400">{myNickname || "Guest"}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-black text-blue-400">{myNickname || "Guest"}</span>
+                  <span className="text-[10px] font-black px-2 py-0.5 bg-blue-500/10 text-blue-400 rounded-md border border-blue-500/20">
+                    {Number(lobbyInfo.players.find(p => p.nickname === myNickname)?.points || clientPoints || 0).toLocaleString()} P
+                  </span>
+                </div>
               </div>
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-zinc-700 to-zinc-900 border border-white/20 flex items-center justify-center text-xs font-black">
                 {myNickname?.charAt(0).toUpperCase() || "?"}
@@ -86,6 +106,14 @@ export default function LobbyPage() {
             </div>
             
             <div className="flex items-center gap-3 w-full sm:w-auto justify-center">
+              {isAdmin && (
+                <Link 
+                  href="/admin"
+                  className="flex-1 sm:flex-none px-6 py-3 bg-red-600/20 text-red-400 border border-red-500/30 rounded-full font-black text-sm uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all shadow-[0_0_20px_rgba(220,38,38,0.2)]"
+                >
+                  Admin
+                </Link>
+              )}
               <button 
                 onClick={() => setIsCreating(true)}
                 className="flex-1 sm:flex-none px-6 py-3 bg-white text-black rounded-full font-black text-sm uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-[0_0_30px_rgba(255,255,255,0.2)]"
@@ -94,7 +122,7 @@ export default function LobbyPage() {
               </button>
               <button 
                 onClick={logout}
-                className="flex-1 sm:flex-none px-6 py-3 bg-red-600/10 text-red-500 border border-red-500/20 rounded-full font-black text-sm uppercase tracking-widest hover:bg-red-600 hover:text-white transition-all"
+                className="flex-1 sm:flex-none px-6 py-3 bg-zinc-800 text-zinc-400 border border-white/5 rounded-full font-black text-sm uppercase tracking-widest hover:bg-white hover:text-black transition-all"
               >
                 Logout
               </button>
@@ -115,7 +143,7 @@ export default function LobbyPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <AnimatePresence mode="popLayout">
-                {rooms.map((room, idx) => {
+                {rooms.filter(room => room.state !== "RESULT").map((room, idx) => {
                   const isJoinable = room.state === "WAITING" && room.players < room.maxPlayers;
                   
                   return (
@@ -221,9 +249,14 @@ export default function LobbyPage() {
                         </div>
                       </div>
                       
-                      <span className={`px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest border ${getStatusColor(player.status)}`}>
-                        {player.status === "LOBBY" ? "Lobby" : player.status === "WAITING" ? "Waiting" : "Playing"}
-                      </span>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className={`px-3 py-1 rounded-full text-[8px] font-black uppercase tracking-widest border ${getStatusColor(player.status)}`}>
+                          {player.status === "LOBBY" ? "Lobby" : player.status === "WAITING" ? "Waiting" : "Playing"}
+                        </span>
+                        <span className="text-[9px] font-black text-zinc-400 italic">
+                          {Number(player.points || 0).toLocaleString()} P
+                        </span>
+                      </div>
                     </motion.div>
                   ))}
                 </AnimatePresence>

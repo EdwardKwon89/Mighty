@@ -11,6 +11,7 @@ export enum GameState {
   SELECTING_FRIEND = "SELECTING_FRIEND",
   PLAYING = "PLAYING",
   RESULT = "RESULT",
+  READY = "READY",
 }
 
 export interface ChatMessage {
@@ -25,6 +26,7 @@ export const useGame = (roomId: string, nickname: string) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastTrickResult, setLastTrickResult] = useState<any>(null);
 
   useEffect(() => {
     // 룸이 변경되거나 닉네임이 바뀔 때 이전 상태 초기화
@@ -32,11 +34,13 @@ export const useGame = (roomId: string, nickname: string) => {
     setMessages([]);
     setResult(null);
     setError(null);
+    setLastTrickResult(null);
     
     if (!nickname || nickname === "익명") return;
 
     const token = localStorage.getItem("mighty_token");
-    const s = io("http://localhost:4000", {
+    const serverUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
+    const s = io(serverUrl, {
       auth: { token }
     });
 
@@ -48,6 +52,12 @@ export const useGame = (roomId: string, nickname: string) => {
 
     s.on("authenticated", ({ token: newToken }: { token: string }) => {
       localStorage.setItem("mighty_token", newToken);
+    });
+
+    s.on("trick-result", (res: any) => {
+      setLastTrickResult(res);
+      // 3초 후 결과 메시지 제거
+      setTimeout(() => setLastTrickResult(null), 3000);
     });
 
     s.on("game-state", (state: any) => {
@@ -65,9 +75,22 @@ export const useGame = (roomId: string, nickname: string) => {
       setMessages((prev) => [...prev, msg]);
     });
 
+    s.on("connect_error", (err) => {
+      console.error("❌ Socket connection error:", err.message);
+      
+      // ERR-05: 세션 만료 혹은 유효하지 않은 토큰인 경우 즉시 리다이렉트
+      if (err.message === "SESSION_EXPIRED" || err.message === "INVALID_TOKEN") {
+        console.warn("Session expired or invalid. Redirecting to login...");
+        localStorage.removeItem("mighty_token");
+        window.location.href = "/";
+      } else {
+        setError(`서버 연결 실패: ${err.message}`);
+      }
+    });
+
     s.on("error", (err: { message: string }) => {
       setError(err.message);
-      if (err.message === "INVALID_TOKEN") {
+      if (err.message === "INVALID_TOKEN" || err.message === "SESSION_EXPIRED") {
         localStorage.removeItem("mighty_token");
         window.location.href = "/";
       }
@@ -122,11 +145,20 @@ export const useGame = (roomId: string, nickname: string) => {
     socket?.emit("start-game", { roomId });
   }, [socket, roomId]);
 
+  const restartGame = useCallback(() => {
+    socket?.emit("restart-game", { roomId });
+  }, [socket, roomId]);
+
+  const clearError = useCallback(() => {
+    setError(null);
+  }, []);
+
   return {
     gameState,
     messages,
     result,
     error,
+    lastTrickResult,
     sendBid,
     sendExchange,
     sendSelectFriend,
@@ -135,6 +167,8 @@ export const useGame = (roomId: string, nickname: string) => {
     sendAddBot,
     leaveRoom,
     sendStartGame,
+    restartGame,
+    clearError,
     socket
   };
 };

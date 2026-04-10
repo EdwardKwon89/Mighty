@@ -14,7 +14,7 @@ export interface RoomInfo {
 
 export interface LobbyInfo {
   onlineCount: number;
-  players: { nickname: string; id: string; status: string; roomId?: string }[];
+  players: { nickname: string; id: string; status: string; points: string; roomId?: string }[];
 }
 
 export function useLobby() {
@@ -27,7 +27,8 @@ export function useLobby() {
 
   useEffect(() => {
     const token = typeof window !== "undefined" ? localStorage.getItem("mighty_token") : null;
-    const s = io("http://localhost:4000", {
+    const serverUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
+    const s = io(serverUrl, {
       auth: { token }
     });
 
@@ -52,9 +53,23 @@ export function useLobby() {
       window.location.href = `/game/${roomId}`;
     });
 
-    s.on("authenticated", ({ token, isAdmin }: { token: string; isAdmin: boolean }) => {
+    s.on("authenticated", ({ token, isAdmin, points }: { token: string; isAdmin: boolean; points: string }) => {
       localStorage.setItem("mighty_token", token);
+      if (points) localStorage.setItem("mighty_points", points);
       setIsAdmin(isAdmin);
+    });
+
+    s.on("connect_error", (err) => {
+      console.error("❌ Socket connection error:", err.message);
+      
+      // ERR-05: 세션 만료 혹은 유효하지 않은 토큰인 경우 즉시 리다이렉트
+      if (err.message === "SESSION_EXPIRED" || err.message === "INVALID_TOKEN") {
+        console.warn("Session expired or invalid. Redirecting to login...");
+        localStorage.removeItem("mighty_token");
+        window.location.href = "/";
+      } else {
+        setError(`서버 연결 실패: ${err.message}`);
+      }
     });
 
     s.on("error", (err: { message: string; code?: string }) => {
@@ -62,13 +77,14 @@ export function useLobby() {
       setError(err.message);
       
       // 인증 실패 관련 에러인 경우 로그인 페이지로 튕겨내기
-      if (err.code === "AUTH_FAILED" || err.message.includes("인증") || err.message.includes("비밀번호")) {
+      if (err.code === "AUTH_FAILED" || 
+          err.message.includes("INVALID_TOKEN") || 
+          err.message === "SESSION_EXPIRED") {
         localStorage.removeItem("mighty_token");
-        localStorage.removeItem("mighty_nickname");
-        localStorage.removeItem("mighty_last_location");
         window.location.href = "/";
       }
     });
+
 
     setSocket(s);
 

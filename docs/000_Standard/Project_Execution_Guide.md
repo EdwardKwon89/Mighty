@@ -50,14 +50,17 @@ NPP는 단순한 구현을 넘어, 시스템의 무결성을 보장하기 위한
 
 ---
 
-## 🚦 3. 품질 게이트 (Quality Gates)
+## 🚦 3. 품질 게이트 및 필수 종료 프로토콜 (MANDATORY)
 
-모든 작업 완료 및 PR 제출 전 다음 게이트를 통과해야 합니다.
+모든 작업 완료 및 PR 제출 전 다음 게이트를 통과해야 하며, 이는 **강제 규정**입니다.
 
-1. **GSD Completion**: 모든 계획된 Task가 `[x]` 처리되었는가?
-2. **NPP DS Audit**: 코드와 문서의 불일치가 0건인가?
-3. **NPP Simulation**: 봇 시뮬레이션에서 '정상 완주' 로그가 확인되었는가?
-4. **NAP Assets**: 이번 작업에서 발견된 잠재적 위험 요소가 체크리스트에 추가되었는가?
+1.  **Issue Documentation**: `docs/020_Report/detailed/`에 이번 작업과 관련된 오류 보고서를 작성하거나 기존 문서를 갱신했는가?
+2.  **Checklist Update**: `docs/030_Checklist/Development_Checklist.md`에 새로운 기술적 발견이나 방어 로직을 반영했는가?
+3.  **Full Audit Pass**: `docs/030_Checklist/audit_logs/`에 마스터 체크리스트의 모든 항목(CHK-01 ~ CHK-XX)을 전수 체크하고 PASS 결과를 기록했는가?
+4.  **Final Verification**: 봇 시뮬레이션 또는 E2E 테스트를 통해 기능의 최종 무결성을 확인했는가?
+
+> [!IMPORTANT]
+> 위 4가지 단계가 완료되지 않은 상태에서의 작업 완료 선언은 규정 위반으로 간주됩니다.
 
 ---
 *Created by Antigravity - Powered by Google DeepMind*

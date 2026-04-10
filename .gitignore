@@ -42,3 +42,6 @@ coverage/
 # Claude Code
 .claude/settings.json
 .claude/settings.local.json
+
+# Turbo
+.turbo/

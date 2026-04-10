@@ -15,11 +15,18 @@ export default function LandingPage() {
   const router = useRouter();
 
   useEffect(() => {
+    // [RENDER_WAKEUP] 서버가 잠들어 있을 수 있으므로 미리 한번 호출하여 깨웁니다.
+    const serverUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
+    fetch(`${serverUrl}/health`).catch(() => console.log("Server waking up..."));
+
     // 서버 포트 4000번(기본값) 또는 환경에 맞는 주소 설정
-    const s = io("http://localhost:4000", {
+    const savedToken = typeof window !== 'undefined' ? localStorage.getItem("mighty_token") : null;
+    
+    const s = io(serverUrl, {
+      auth: { token: savedToken },
       transports: ["websocket"],
-      reconnectionAttempts: 5,
-      timeout: 10000
+      reconnectionAttempts: 10, // 배포 환경 대응을 위해 재시도 횟수 상향
+      timeout: 20000 // 서버 깨어남 대기를 위해 타임아웃 상향
     });
     
     setSocket(s);
@@ -29,36 +36,36 @@ export default function LandingPage() {
     });
 
     s.on("connect_error", (err) => {
-      console.error("❌ Socket connection error:", err);
-      setErrorMessage("서버 연결에 실패했습니다. (포트 4000)");
+      // 에러 메시지 추출 (Socket.io의 err 객체 구조 대응)
+      const errorMsg = typeof err === 'string' ? err : err.message;
+      console.warn("⚠️ Socket connection error handle:", errorMsg);
       setIsLoading(false);
+      
+      if (errorMsg === "SESSION_EXPIRED" || errorMsg === "INVALID_TOKEN") {
+        localStorage.removeItem("mighty_token");
+        // 무한 루프 방지를 위해 토큰이 있을 때만 리로드 시도
+        if (savedToken) {
+          window.location.href = "/?error=" + encodeURIComponent(errorMsg);
+        } else {
+          setErrorMessage("세션이 만료되었습니다. 다시 로그인해주세요.");
+        }
+      } else {
+        setErrorMessage("서버 연결에 실패했습니다. (포트 4000)");
+      }
     });
 
     const savedNick = localStorage.getItem("mighty_nickname");
     if (savedNick) {
       setNickname(savedNick);
-      s.emit("get-stats", { nickname: savedNick }, (res: any) => {
+      socket?.emit("get-stats", { nickname: savedNick }, (res: any) => {
         if (res) setStats(res);
       });
 
-      const lastLocation = localStorage.getItem("mighty_last_location");
-      if (lastLocation) {
-        try {
-          const loc = JSON.parse(lastLocation);
-          const savedToken = localStorage.getItem("mighty_token");
-          // 토큰이 있다면 자동 로그인을 시도하거나 로비로 보냄
-          if (savedToken) {
-            if (loc.type === 'ROOM' && loc.roomId) {
-              router.push(`/game/${loc.roomId}`);
-              return;
-            } else if (loc.type === 'LOBBY') {
-              router.push("/lobby");
-              return;
-            }
-          }
-        } catch (e) {
-          console.error("Failed to parse last location", e);
-        }
+      // ERR-05: 세션 검증을 위해 즉시 리다이렉트하지 않고 대기 상태로 설정
+      const savedToken = localStorage.getItem("mighty_token");
+      if (savedToken) {
+        setIsLoading(true);
+        console.log("Verifying existing session...");
       }
     }
 
@@ -71,12 +78,20 @@ export default function LandingPage() {
       router.push('/lobby');
     });
 
-    s.on("error", (err: { message: string }) => {
+    s.on("error", (err: { message: string; code?: string }) => {
       console.error("Authentication error:", err.message);
-      setErrorMessage(err.message);
       setIsLoading(false);
-      // 인증 실패 시 저장된 정보 삭제
-      localStorage.removeItem("mighty_token");
+      
+      // ERR-05: 인증 실패(토큰 만료 등) 시 저장된 정보를 삭제하고 로그인 폼 표시
+      if (err.code === "AUTH_FAILED" || err.message.includes("INVALID_TOKEN") || err.message === "SESSION_EXPIRED") {
+        localStorage.removeItem("mighty_token");
+        const msg = (err.message === "INVALID_TOKEN" || err.message === "SESSION_EXPIRED") 
+          ? "세션이 만료되었습니다. 다시 로그인해주세요." 
+          : err.message;
+        setErrorMessage(msg);
+      } else {
+        setErrorMessage(err.message);
+      }
     });
 
     return () => {
@@ -189,9 +204,15 @@ export default function LandingPage() {
             type="submit"
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-[1.5rem] text-xl transition-all shadow-[0_20px_40px_rgba(37,99,235,0.2)] mt-8"
+            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-[1.5rem] text-xl transition-all shadow-[0_20px_40px_rgba(37,99,235,0.2)] mt-8 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={isLoading}
           >
-            {isLoading ? "ENTERING..." : "ENTER ARENA"}
+            {isLoading ? (
+              <div className="flex items-center justify-center gap-3">
+                <div className="w-5 h-5 border-4 border-white/20 border-t-white rounded-full animate-spin" />
+                <span>{nickname && localStorage.getItem("mighty_token") ? "VERIFYING..." : "ENTERING..."}</span>
+              </div>
+            ) : "ENTER ARENA"}
           </motion.button>
         </form>
 
