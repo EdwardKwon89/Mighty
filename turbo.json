@@ -6,6 +6,7 @@
       "outputs": [".next/**", "dist/**"]
     },
     "generate": {
+      "dependsOn": ["^generate"],
       "cache": false
     },
     "lint": {
