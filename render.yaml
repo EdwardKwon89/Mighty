@@ -10,6 +10,8 @@ services:
         value: production
       - key: NODE_VERSION
         value: "22"
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=2048"
       - key: DATABASE_URL
         value: "postgresql://postgres.inxwpmufbiozoykfmweq:HTTgaCvdkvFZ6pfU@aws-1-ap-northeast-2.pooler.supabase.com:6543/postgres?pgbouncer=true"
       - key: JWT_SECRET
