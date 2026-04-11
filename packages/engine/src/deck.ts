@@ -1,4 +1,4 @@
-import { Card, Suit, Rank, MIGHTY_CONSTANTS } from './index';
+import { Card, Suit, Rank, MIGHTY_CONSTANTS } from './types';
 
 /**
  * 53장(52 + 1 Joker) 덱 생성

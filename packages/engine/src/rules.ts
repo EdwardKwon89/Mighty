@@ -1,4 +1,4 @@
-import { Card, Suit, Rank, getCardId, isSameSuit } from './index.js';
+import { Card, Suit, Rank, getCardId, isSameSuit } from './types';
 
 export interface PlayedCard {
   playerId: string;
