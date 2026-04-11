@@ -59,6 +59,13 @@ export function useLobby() {
       setIsAdmin(isAdmin);
     });
 
+    s.on("duplicate-login", (data: { message: string }) => {
+      alert(data.message);
+      localStorage.removeItem("mighty_token");
+      localStorage.removeItem("mighty_nickname");
+      window.location.href = "/";
+    });
+
     s.on("connect_error", (err) => {
       console.error("❌ Socket connection error:", err.message);
       

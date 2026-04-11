@@ -54,6 +54,13 @@ export const useGame = (roomId: string, nickname: string) => {
       localStorage.setItem("mighty_token", newToken);
     });
 
+    s.on("duplicate-login", (data: { message: string }) => {
+      alert(data.message);
+      localStorage.removeItem("mighty_token");
+      localStorage.removeItem("mighty_nickname");
+      window.location.href = "/";
+    });
+
     s.on("trick-result", (res: any) => {
       setLastTrickResult(res);
       // 3초 후 결과 메시지 제거

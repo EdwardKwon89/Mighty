@@ -41,6 +41,7 @@
 | **CHK-26** | UX | 팀별 결과 분류 | 결과 화면에서 주공/프렌드(Declarer Side)와 야당(Opposition Side)이 가시적으로 분리되어 표시되는가? |
 | **CHK-27** | Deployment | 환경 변수 범용성 | 소켓 URL 주소가 `NEXT_PUBLIC_SOCKET_URL` 등 환경 변수로 관리되어 개발/운영 환경 가변성이 보장되는가? |
 | **CHK-28** | Deployment | 서버 가용성 (Wake-up) | Render Free Tier 진입 시 `health` 체크 호출을 통한 자동 깨우기 로직이 프론트엔드 진입점에 존재하는가? |
+| **CHK-29** | Deployment | Git 작성자 정합성 | 로컬 Git `user.email`이 Vercel/GitHub 팀 권한에 합치하는지 배포 전 확인하였는가? |
 
 ---
 

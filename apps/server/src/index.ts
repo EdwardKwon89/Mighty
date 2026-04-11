@@ -139,6 +139,24 @@ function broadcastRoomsList() {
   io.emit("rooms-list", roomList);
 }
 
+/**
+ * 중복 로그인 세션 강제 종료 헬퍼
+ */
+async function kickExistingSessions(nickname: string, currentSocketId: string) {
+  const sockets = await io.fetchSockets();
+  for (const s of sockets) {
+    if (s.data.user?.nickname === nickname && s.id !== currentSocketId) {
+      console.log(`[KICK] Disconnecting duplicate session for ${nickname} (Socket: ${s.id})`);
+      s.emit("duplicate-login", {
+        message: "다른 기기 또는 브라우저에서 로그인하여 연결이 종료되었습니다."
+      });
+      // disconnect 시 타이머 유예 방지를 위해 플래그 설정
+      s.data.isKicked = true;
+      s.disconnect(true);
+    }
+  }
+}
+
 // 헬퍼: 로비 실시간 접속자 정보 브로드캐스트
 async function broadcastLobbyStats() {
   const sockets = await io.fetchSockets();
@@ -276,6 +294,11 @@ io.on("connection", (socket: Socket) => {
 
   socket.on("join-room", async ({ roomId, nickname, password, token }) => {
     try {
+      // 0. 중복 로그인 세션 정리 (Kick-out)
+      if (nickname) {
+        await kickExistingSessions(nickname, socket.id);
+      }
+
       let user = socket.data.user;
       let authenticated = false;
 
@@ -667,6 +690,12 @@ io.on("connection", (socket: Socket) => {
     console.log("User socket disconnected:", socket.id, user?.nickname);
 
     if (user && user.nickname) {
+      // 중복 로그인으로 인한 강제 종료(Kick)인 경우 타이머 유예 없이 즉시 종료 처리 지원
+      if (socket.data.isKicked) {
+        console.log(`[KICK_BYPASS] Skipping leaver timer for ${user.nickname} (New session already active)`);
+        return;
+      }
+
       // ERR-10: 기존에 해당 닉네임으로 실행 중인 타이머가 있다면 먼저 제거 (중첩 방지)
       const existingTimer = reconnectTimers.get(user.nickname);
       if (existingTimer) {
