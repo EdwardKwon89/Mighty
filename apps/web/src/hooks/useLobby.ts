@@ -53,10 +53,16 @@ export function useLobby() {
       window.location.href = `/game/${roomId}`;
     });
 
-    s.on("authenticated", ({ token, isAdmin, points }: { token: string; isAdmin: boolean; points: string }) => {
+    s.on("authenticated", ({ token, isAdmin, points, rejoinRoomId }: { token: string; isAdmin: boolean; points: string; rejoinRoomId?: string }) => {
       localStorage.setItem("mighty_token", token);
       if (points) localStorage.setItem("mighty_points", points);
       setIsAdmin(isAdmin);
+
+      // 자동 복귀 로직: 참여 중인 방이 있다면 즉시 이동
+      if (rejoinRoomId && rejoinRoomId !== "LOBBY") {
+        console.log(`[AUTO_REJOIN] Redirecting to active room: ${rejoinRoomId}`);
+        window.location.href = `/game/${rejoinRoomId}`;
+      }
     });
 
     s.on("duplicate-login", (data: { message: string }) => {

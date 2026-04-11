@@ -157,6 +157,18 @@ async function kickExistingSessions(nickname: string, currentSocketId: string) {
   }
 }
 
+/**
+ * 특정 닉네임이 현재 참여 중인 방 ID를 찾는 헬퍼
+ */
+function findRoomByNickname(nickname: string): string | null {
+  for (const [roomId, room] of rooms.entries()) {
+    if (room.players.some(p => p.nickname === nickname)) {
+      return roomId;
+    }
+  }
+  return null;
+}
+
 // 헬퍼: 로비 실시간 접속자 정보 브로드캐스트
 async function broadcastLobbyStats() {
   const sockets = await io.fetchSockets();
@@ -258,10 +270,12 @@ io.on("connection", (socket: Socket) => {
   if (user && user.nickname) {
     // 닉네임으로 최신 포인트를 DB에서 조회 (getPlayerStats 사용)
     getPlayerStats(user.nickname).then(stats => {
+      const rejoinRoomId = findRoomByNickname(user.nickname);
       socket.emit("authenticated", {
         token: socket.handshake.auth.token,
         points: stats?.points || "0",
-        isAdmin: user.isAdmin
+        isAdmin: user.isAdmin,
+        rejoinRoomId
       });
     });
   }
@@ -355,10 +369,12 @@ io.on("connection", (socket: Socket) => {
             token: newToken 
           };
           socket.data.user = user;
+          const rejoinRoomId = findRoomByNickname(nickname);
           socket.emit("authenticated", { 
             token: newToken, 
             points: authResult.points,
-            isAdmin: authResult.isAdmin
+            isAdmin: authResult.isAdmin,
+            rejoinRoomId // 비밀번호 인증 시에도 힌트 제공
           });
           authenticated = true;
           console.log(`[AUTH_SUCCESS] ${nickname} authenticated via password.`);

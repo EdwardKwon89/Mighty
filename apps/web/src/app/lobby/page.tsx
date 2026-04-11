@@ -43,17 +43,21 @@ export default function LobbyPage() {
 
   // 방 입장 핸들러 (제한 로직 포함)
   const handleJoinRoom = useCallback((room: any) => {
-    // 인원 초과 또는 게임 중인 방 체크
+    // 내가 이미 이 방의 플레이어인지 확인
+    const myRoomId = lobbyInfo.players.find(p => p.nickname === myNickname)?.roomId;
+    const isMyRoom = room.id === myRoomId;
+
+    // 인원 초과 또는 게임 중인 방 체크 (나의 방이 아닌 경우에만 차단)
     const isFull = room.players >= room.maxPlayers;
     const isStarted = room.state !== "WAITING";
 
-    if (isStarted || isFull) {
+    if (!isMyRoom && (isStarted || isFull)) {
       alert("입장할 수 없읍니다.");
       return;
     }
 
     router.push(`/game/${room.id}`);
-  }, [router]);
+  }, [router, lobbyInfo.players, myNickname]);
 
   // 필터링된 플레이어 목록 (대소문자 일치 확인)
   const filteredPlayers = useMemo(() => {
@@ -144,7 +148,9 @@ export default function LobbyPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <AnimatePresence mode="popLayout">
                 {rooms.filter(room => room.state !== "RESULT").map((room, idx) => {
-                  const isJoinable = room.state === "WAITING" && room.players < room.maxPlayers;
+                  const myRoomId = lobbyInfo.players.find(p => p.nickname === myNickname)?.roomId;
+                  const isMyRoom = room.id === myRoomId;
+                  const isJoinable = (room.state === "WAITING" && room.players < room.maxPlayers) || isMyRoom;
                   
                   return (
                     <motion.div
@@ -156,9 +162,11 @@ export default function LobbyPage() {
                       onClick={() => handleJoinRoom(room)}
                     >
                       <div className={`p-8 rounded-[32px] bg-white/[0.02] border transition-all duration-500 backdrop-blur-2xl relative overflow-hidden ${
-                        isJoinable 
-                          ? "border-white/5 group-hover:border-blue-500/40 group-hover:bg-white/[0.04]" 
-                          : "border-red-500/20 grayscale opacity-60"
+                        isMyRoom
+                          ? "border-blue-500/60 bg-blue-500/5 shadow-[0_0_30px_rgba(59,130,246,0.1)]"
+                          : isJoinable 
+                            ? "border-white/5 group-hover:border-blue-500/40 group-hover:bg-white/[0.04]" 
+                            : "border-red-500/20 grayscale opacity-60"
                       }`}>
                         <div className="flex justify-between items-start mb-6">
                           <div>
@@ -166,9 +174,10 @@ export default function LobbyPage() {
                             <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mt-1">Mighty Room #{idx + 1}</p>
                           </div>
                           <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${
+                            isMyRoom ? "bg-blue-500 text-white shadow-lg" : 
                             room.state === "WAITING" ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-blue-500/10 text-blue-400 border border-blue-500/20"
                           }`}>
-                            {room.state === "WAITING" ? "Waiting" : "In Progress"}
+                            {isMyRoom ? "My Game" : room.state === "WAITING" ? "Waiting" : "In Progress"}
                           </span>
                         </div>
                         
