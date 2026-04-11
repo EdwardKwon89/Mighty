@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: mighty-server
+    runtime: node
+    plan: free # Change to a higher plan if needed
+    buildCommand: npm install && npx turbo build --filter=server
+    startCommand: npx turbo run generate --filter=database && npm run start --filter=server
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        value: "postgresql://postgres:postgres@db.inxwpmufbiozoykfmweq.supabase.co:5432/postgres?pgbouncer=true"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: FRONTEND_URL
+        value: https://mighty-prime.vercel.app
+      - key: PORT
+        value: 10000
