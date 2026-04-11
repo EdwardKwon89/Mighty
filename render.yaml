@@ -9,7 +9,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        value: "postgresql://postgres:postgres@db.inxwpmufbiozoykfmweq.supabase.co:5432/postgres"
+        value: "postgresql://postgres.inxwpmufbiozoykfmweq:HTTgaCvdkvFZ6pfU@aws-1-ap-northeast-2.pooler.supabase.com:6543/postgres?pgbouncer=true"
       - key: JWT_SECRET
         generateValue: true
       - key: FRONTEND_URL
